@@ -23,18 +23,18 @@ class Recommender:
 		print('USER', args.user, 'ITEM', args.item)
 		self.metrics = dict()
 		mets = ['Loss', 'preLoss', 'HR', 'NDCG']
+		if args.use_hard_neg:
+			mets.append('contrastiveLoss')
 		for met in mets:
-			self.metrics['Train' + met] = list()
-			self.metrics['Test' + met] = list()
+			self.metrics[met] = list()
 
 	def makePrint(self, name, ep, reses, save):
 		ret = 'Epoch %d/%d, %s: ' % (ep, args.epoch, name)
 		for metric in reses:
 			val = reses[metric]
 			ret += '%s = %.4f, ' % (metric, val)
-			tem = name + metric
-			if save and tem in self.metrics:
-				self.metrics[tem].append(val)
+			if save and metric in self.metrics:
+				self.metrics[metric].append(val)
 		ret = ret[:-2] + '  '
 		return ret
 
@@ -153,6 +153,9 @@ class Recommender:
 		multihead_item_vector = self.multihead_self_attention1.attention(tf.contrib.layers.layer_norm(item_vector_tensor))# (tf.layers.batch_normalization(item_vector_tensor,training=self.is_train))#
 		final_user_vector = tf.reduce_mean(multihead_user_vector,axis=1)#+user_vector_long
 		final_item_vector = tf.reduce_mean(multihead_item_vector,axis=1)#+item_vector_long
+		# Save final_item_vector as a class variable for use in hard negative sampling
+		self.final_item_vector = final_item_vector
+		
 		iEmbed_att=final_item_vector
 		# sequence att
 		self.multihead_self_attention_sequence = list()
@@ -165,7 +168,9 @@ class Recommender:
 			att_layer1=self.multihead_self_attention_sequence[i].attention(tf.contrib.layers.layer_norm(att_layer))
 			att_layer=Activate(att_layer1,"leakyRelu")+att_layer
 		att_user=tf.reduce_sum(att_layer,axis=1)
-		# att_user=self.additive_attention0.attention(att_layer)# tf.reduce_sum(att_layer,axis=1)
+		# Save att_user as a class variable for use in hard negative sampling
+		self.att_user = att_user
+		
 		pckIlat_att = tf.nn.embedding_lookup(iEmbed_att, self.iids)		
 		pckUlat = tf.nn.embedding_lookup(final_user_vector, self.uids)
 		pckIlat = tf.nn.embedding_lookup(final_item_vector, self.iids)
@@ -242,12 +247,79 @@ class Recommender:
 		self.posPred = tf.slice(self.preds, [0], [sampNum])# begin at 0, size = sampleNum
 		self.negPred = tf.slice(self.preds, [sampNum], [-1])# 
 		self.preLoss = tf.reduce_mean(tf.maximum(0.0, 1.0 - (self.posPred - self.negPred)))# +tf.reduce_mean(tf.maximum(0.0,self.negPred))
-		self.regLoss = args.reg * Regularize()  + args.ssl_reg * self.sslloss
-		self.loss = self.preLoss + self.regLoss
+		
+		# Add InfoNCE contrastive loss if hard negative sampling is enabled
+		if args.use_hard_neg:
+			self.contrastive_loss = self.compute_infonce_loss(sampNum)
+		else:
+			self.contrastive_loss = 0.0
+			
+		self.regLoss = args.reg * Regularize() + args.ssl_reg * self.sslloss
+		
+		# Add contrastive loss to the final loss with weighting parameter
+		if args.use_hard_neg:
+			self.loss = self.preLoss + self.regLoss + args.contrastive_weight * self.contrastive_loss
+		else:
+			self.loss = self.preLoss + self.regLoss
 
 		globalStep = tf.Variable(0, trainable=False)
 		learningRate = tf.train.exponential_decay(args.lr, globalStep, args.decay_step, args.decay, staircase=True)
 		self.optimizer = tf.train.AdamOptimizer(learningRate).minimize(self.loss, global_step=globalStep)
+
+	def compute_infonce_loss(self, sampNum):
+		"""
+		Compute InfoNCE contrastive loss to enhance discriminative power
+		
+		Args:
+			sampNum: Number of positive samples
+			
+		Returns:
+			InfoNCE loss value
+		"""
+		# Get short-term user representations from attention output
+		user_reps = tf.nn.embedding_lookup(self.att_user, self.uLocs_seq)
+		
+		# Get item representations
+		item_reps = tf.nn.embedding_lookup(self.final_item_vector, self.iids)
+		
+		# Split into anchor-positive and anchor-negative pairs
+		anchor_reps = user_reps[:sampNum]  # User representations for positive samples
+		pos_item_reps = item_reps[:sampNum]  # Positive item representations
+		neg_item_reps = item_reps[sampNum:]  # Negative item representations (hard negatives)
+		
+		# Normalize embeddings for cosine similarity
+		anchor_norm = tf.nn.l2_normalize(anchor_reps, axis=1)
+		pos_norm = tf.nn.l2_normalize(pos_item_reps, axis=1)
+		neg_norm = tf.nn.l2_normalize(neg_item_reps, axis=1)
+		
+		# Compute cosine similarities
+		pos_sim = tf.reduce_sum(anchor_norm * pos_norm, axis=1)  # Shape: [sampNum]
+		
+		# Reshape for broadcasting
+		anchor_norm_expanded = tf.expand_dims(anchor_norm, axis=1)  # Shape: [sampNum, 1, latdim]
+		neg_norm_expanded = tf.expand_dims(neg_norm, axis=0)  # Shape: [1, sampNum, latdim]
+		
+		# Compute all anchor-negative similarities
+		neg_sim = tf.reduce_sum(
+			anchor_norm_expanded * neg_norm_expanded, axis=2
+		)  # Shape: [sampNum, sampNum]
+		
+		# Concatenate positive and negative similarities
+		# Shape: [sampNum, 1 + sampNum]
+		logits = tf.concat([tf.expand_dims(pos_sim, axis=1), neg_sim], axis=1)
+		
+		# Scale logits by temperature
+		logits = logits / args.temp
+		
+		# Labels are always 0 because positive is at position 0
+		labels = tf.zeros(sampNum, dtype=tf.int32)
+		
+		# Compute cross entropy loss
+		infonce_loss = tf.reduce_mean(
+			tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
+		)
+		
+		return infonce_loss
 
 	def sampleTrainBatch(self, batIds, labelMat, timeMat, train_sample_num):
 		temTst = self.handler.tstInt[batIds]
@@ -274,7 +346,13 @@ class Recommender:
 				# choose = 1
 				choose = randint(1,max(min(args.pred_num+1,len(posset)-3),1))
 				poslocs.extend([posset[-choose]]*sampNum)
-				neglocs = negSamp(temLabel[i], sampNum, args.item, [self.handler.sequence[batIds[i]][-1],temTst[i]], self.handler.item_with_pop)
+				
+				# Use hard negative sampling if enabled
+				if args.use_hard_neg:
+					neglocs = self.sample_hard_negatives(batIds[i], temLabel[i], sampNum)
+				else:
+					neglocs = negSamp(temLabel[i], sampNum, args.item, [self.handler.sequence[batIds[i]][-1],temTst[i]], self.handler.item_with_pop)
+			
 			for j in range(sampNum):
 				posloc = poslocs[j]
 				negloc = neglocs[j]
@@ -300,6 +378,116 @@ class Recommender:
 				sequence[i]=np.zeros(args.pos_length,dtype=int)
 				mask[i]=np.zeros(args.pos_length)
 		return uLocs, iLocs, sequence,mask, uLocs_seq# ,utime
+
+	def sample_hard_negatives(self, user_id, user_interactions, sampNum):
+		"""
+		Sample hard negatives for a given user based on cosine similarity.
+		
+		Args:
+			user_id: The ID of the user
+			user_interactions: Array of user's interactions (1 for interacted items, 0 otherwise)
+			sampNum: Number of hard negatives to sample
+			
+		Returns:
+			List of hard negative item IDs
+		"""
+		# Get the user's short-term embedding (we'll use multihead attention output for this)
+		user_seq = self.handler.sequence[user_id][:-1]  # All but the last item
+		if len(user_seq) == 0:
+			# Fallback to random sampling if no history
+			return negSamp(user_interactions, sampNum, args.item, 
+				[self.handler.sequence[user_id][-1] if len(self.handler.sequence[user_id]) > 0 else None, 
+				self.handler.tstInt[user_id]], self.handler.item_with_pop)
+		
+		# Get item embeddings for computing similarity
+		# This happens during training, so we'll use the current session to run a forward pass
+		feed_dict = {}
+		
+		# Create a batch of the expected size (args.batch)
+		seq_batch = np.zeros((args.batch, args.pos_length), dtype=int)
+		mask_batch = np.zeros((args.batch, args.pos_length))
+		
+		# Fill sequence and mask for the user we care about (first position)
+		if len(user_seq) <= args.pos_length:
+			seq_batch[0, -len(user_seq):] = user_seq
+			mask_batch[0, -len(user_seq):] = 1
+		else:
+			seq_batch[0, :] = user_seq[-args.pos_length:]
+			mask_batch[0, :] = 1
+			
+		feed_dict[self.sequence] = seq_batch
+		feed_dict[self.mask] = mask_batch
+		feed_dict[self.is_train] = False
+		feed_dict[self.keepRate] = 1.0
+		
+		# Also need to provide placeholders for other required inputs
+		# Create dummy values for required placeholders
+		dummy_uids = np.zeros(2, dtype=np.int32)  # Just need some values
+		dummy_iids = np.zeros(2, dtype=np.int32)
+		dummy_ulocs_seq = np.zeros(2, dtype=np.int32)
+		
+		feed_dict[self.uids] = dummy_uids
+		feed_dict[self.iids] = dummy_iids
+		feed_dict[self.uLocs_seq] = dummy_ulocs_seq
+		
+		# Add dummy values for suids, siids, and suLocs_seq
+		for k in range(args.graphNum):
+			feed_dict[self.suids[k]] = dummy_uids
+			feed_dict[self.siids[k]] = dummy_iids
+			feed_dict[self.suLocs_seq[k]] = dummy_ulocs_seq
+		
+		# Get the short-term representation for this user by running a forward pass
+		try:
+			# Get all item embeddings and user's short-term embedding
+			items_embed, user_att = self.sess.run([self.final_item_vector, self.att_user], feed_dict=feed_dict)
+			
+			# Compute cosine similarity between user's short-term embedding and all items
+			user_embed = user_att[0]  # First user in the batch (the one we care about)
+			
+			# Normalize embeddings for cosine similarity
+			user_norm = np.linalg.norm(user_embed)
+			items_norm = np.linalg.norm(items_embed, axis=1)
+			
+			# Avoid division by zero
+			user_norm = max(user_norm, 1e-10)
+			items_norm = np.maximum(items_norm, 1e-10)
+			
+			# Compute cosine similarity
+			similarities = np.sum(user_embed * items_embed, axis=1) / (user_norm * items_norm)
+			
+			# Exclude items the user has interacted with
+			interacted_items = np.where(user_interactions > 0)[0]
+			
+			# Also exclude test item if available
+			exclude_items = list(interacted_items)
+			if self.handler.tstInt[user_id] is not None:
+				exclude_items.append(self.handler.tstInt[user_id])
+			
+			# Set similarity of interacted items to -inf
+			similarities[exclude_items] = -np.inf
+			
+			# Get top-k items with highest similarity
+			hard_neg_indices = np.argsort(similarities)[-args.hard_neg_top_k:]
+			
+			# If we need more negatives than hard_neg_top_k, fill with random samples
+			if sampNum > len(hard_neg_indices):
+				additional_negs = negSamp(user_interactions, sampNum - len(hard_neg_indices), 
+										args.item, [self.handler.sequence[user_id][-1], self.handler.tstInt[user_id]], 
+										self.handler.item_with_pop)
+				return list(hard_neg_indices) + additional_negs
+			
+			# If we need fewer, randomly sample from hard negatives
+			if sampNum < len(hard_neg_indices):
+				return np.random.choice(hard_neg_indices, sampNum, replace=False).tolist()
+			
+			return hard_neg_indices.tolist()
+			
+		except Exception as e:
+			# Fallback to random sampling if any error occurs
+			print(f"Error in hard negative sampling: {e}")
+			return negSamp(user_interactions, sampNum, args.item, 
+				[self.handler.sequence[user_id][-1], self.handler.tstInt[user_id]], 
+				self.handler.item_with_pop)
 
 	def sampleSslBatch(self, batIds, labelMat, use_epsilon=True):
 		temLabel=list()
@@ -342,6 +530,7 @@ class Recommender:
 		num = args.user
 		sfIds = np.random.permutation(num)[:args.trnNum]
 		epochLoss, epochPreLoss = [0] * 2
+		epochContrastiveLoss = 0
 		num = len(sfIds)
 		sample_num_list=[40]		
 		steps = int(np.ceil(num / args.batch))
@@ -351,7 +540,11 @@ class Recommender:
 				ed = min((i+1) * args.batch, num)
 				batIds = sfIds[st: ed]
 
-				target = [self.optimizer, self.preLoss, self.regLoss, self.loss, self.posPred, self.negPred, self.preds_one]
+				if args.use_hard_neg:
+					target = [self.optimizer, self.preLoss, self.regLoss, self.loss, self.contrastive_loss, self.posPred, self.negPred, self.preds_one]
+				else:
+					target = [self.optimizer, self.preLoss, self.regLoss, self.loss, self.posPred, self.negPred, self.preds_one]
+					
 				feed_dict = {}
 				uLocs, iLocs, sequence, mask, uLocs_seq= self.sampleTrainBatch(batIds, self.handler.trnMat, self.handler.timeMat, sample_num_list[s])
 				# esuLocs, esiLocs, epsilon = self.sampleSslBatch(batIds, self.handler.subadj)
@@ -372,13 +565,24 @@ class Recommender:
 
 				res = self.sess.run(target, feed_dict=feed_dict, options=config_pb2.RunOptions(report_tensor_allocations_upon_oom=True))
 
-				preLoss, regLoss, loss, pos, neg, pone = res[1:]
+				if args.use_hard_neg:
+					preLoss, regLoss, loss, contrastiveLoss, pos, neg, pone = res[1:]
+					epochContrastiveLoss += contrastiveLoss
+					log('Step %d/%d: preloss = %.2f, REGLoss = %.2f, ConLoss = %.4f         ' % 
+						(i+s*steps, steps*len(sample_num_list), preLoss, regLoss, contrastiveLoss), save=False, oneline=True)
+				else:
+					preLoss, regLoss, loss, pos, neg, pone = res[1:]
+					log('Step %d/%d: preloss = %.2f, REGLoss = %.2f         ' % 
+						(i+s*steps, steps*len(sample_num_list), preLoss, regLoss), save=False, oneline=True)
+					
 				epochLoss += loss
 				epochPreLoss += preLoss
-				log('Step %d/%d: preloss = %.2f, REGLoss = %.2f         ' % (i+s*steps, steps*len(sample_num_list), preLoss, regLoss), save=False, oneline=True)
+				
 		ret = dict()
 		ret['Loss'] = epochLoss / steps
 		ret['preLoss'] = epochPreLoss / steps
+		if args.use_hard_neg:
+			ret['contrastiveLoss'] = epochContrastiveLoss / steps
 		return ret
 
 	def sampleTestBatch(self, batIds, labelMat): # labelMat=TrainMat(adj)

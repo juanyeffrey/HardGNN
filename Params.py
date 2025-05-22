@@ -48,6 +48,10 @@ def parse_args():
 	parser.add_argument('--test', default=True, type=bool, help='test or val')
 	parser.add_argument('--ssl', default=True, type=bool, help='use self-supervised learning')
 	parser.add_argument('--uid', default=0, type=int, help='show user score')
+	# Hard negative sampling parameters
+	parser.add_argument('--use_hard_neg', default=False, type=bool, help='use hard negative sampling')
+	parser.add_argument('--hard_neg_top_k', default=5, type=int, help='number of hard negatives to sample')
+	parser.add_argument('--contrastive_weight', default=0.1, type=float, help='weight for contrastive loss')
 	return parser.parse_args()
 args = parse_args()
 args.decay_step = args.trnNum//args.batch
