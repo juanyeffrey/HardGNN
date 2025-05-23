@@ -3,12 +3,13 @@ import numpy as np
 from Params import args
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
-from DataHandler import negSamp, transpose, DataHandler, transToLsts
+from DataHandler import transpose, DataHandler, transToLsts  # Removed negSamp
 import tensorflow as tf
 from tensorflow.core.protobuf import config_pb2
 import pickle
-from model import Recommender
+from model_with_hard_neg_sampling import Recommender  # Updated import
 import random
+
 if __name__ == '__main__':
 	logger.saveDefault = True
 	config = tf.ConfigProto()
@@ -21,6 +22,7 @@ if __name__ == '__main__':
 	np.random.seed(100)
 	random.seed(100)
 	tf.set_random_seed(100)
+
 	with tf.Session(config=config) as sess:
 		recom = Recommender(sess, handler)
 		recom.run()

@@ -19,6 +19,17 @@ class Recommender:
 	def __init__(self, sess, handler):
 		self.sess = sess
 		self.handler = handler
+		self.u_input = tf.placeholder(tf.int32, shape=[None], name='user_input')
+		self.i_input = tf.placeholder(tf.int32, shape=[None], name='item_input')
+		self.is_training = tf.placeholder(tf.bool, name='is_training')
+		# Embeddings (example: replace with your actual embeddings if already initialized)
+		self.user_embedding = tf.Variable(tf.random.normal([args.user, args.latdim]), name='user_embedding')
+		self.item_embedding = tf.Variable(tf.random.normal([args.item, args.latdim]), name='item_embedding')
+
+		# Dot-product scoring
+		user_emb = tf.nn.embedding_lookup(self.user_embedding, self.u_input)
+		item_emb = tf.nn.embedding_lookup(self.item_embedding, self.i_input)
+		self.output = tf.reduce_sum(user_emb * item_emb, axis=1)
 
 		print('USER', args.user, 'ITEM', args.item)
 		self.metrics = dict()
@@ -274,7 +285,7 @@ class Recommender:
 				# choose = 1
 				choose = randint(1,max(min(args.pred_num+1,len(posset)-3),1))
 				poslocs.extend([posset[-choose]]*sampNum)
-				neglocs = negSamp(temLabel[i], sampNum, args.item, [self.handler.sequence[batIds[i]][-1],temTst[i]], self.handler.item_with_pop)
+				neglocs = self.getHardNegatives(user_id=batIds[i], true_items=temLabel[i], k=sampNum)
 			for j in range(sampNum):
 				posloc = poslocs[j]
 				negloc = neglocs[j]
@@ -525,3 +536,27 @@ class Recommender:
 		with open('History/' + args.load_model + '.his', 'rb') as fs:
 			self.metrics = pickle.load(fs)
 		log('Model Loaded')	
+
+	def getHardNegatives(self, user_id, true_items, k):
+		all_items = set(range(args.item))
+		candidate_items = list(all_items - set(true_items))
+
+		# Repeat user embedding for each candidate item
+		user_input = [user_id] * len(candidate_items)
+		item_input = candidate_items
+
+		# Prepare feed_dict for TensorFlow
+		feed_dict = {
+			self.u_input: user_input,
+			self.i_input: item_input,
+			self.is_training: False
+		}
+
+		# Get model predictions
+		scores = self.sess.run(self.output, feed_dict)
+
+		# Select top-k scoring items as hard negatives
+		hard_indices = np.argsort(scores)[-k:]
+		hard_negatives = [candidate_items[idx] for idx in hard_indices]
+		return hard_negatives
+
