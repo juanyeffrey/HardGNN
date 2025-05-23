@@ -7,7 +7,7 @@ from DataHandler import transpose, DataHandler, transToLsts  # Removed negSamp
 import tensorflow as tf
 from tensorflow.core.protobuf import config_pb2
 import pickle
-from model_with_hard_neg_sampling import Recommender  # Updated import
+from model import Recommender  # Updated import
 import random
 
 if __name__ == '__main__':
