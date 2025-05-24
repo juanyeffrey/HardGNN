@@ -269,6 +269,7 @@ class Recommender:
 	def compute_infonce_loss(self, sampNum):
 		"""
 		Compute InfoNCE contrastive loss to enhance discriminative power
+		with optimized memory usage
 		
 		Args:
 			sampNum: Number of positive samples
@@ -292,21 +293,26 @@ class Recommender:
 		pos_norm = tf.nn.l2_normalize(pos_item_reps, axis=1)
 		neg_norm = tf.nn.l2_normalize(neg_item_reps, axis=1)
 		
-		# Compute cosine similarities
+		# Compute cosine similarity for positive pairs
 		pos_sim = tf.reduce_sum(anchor_norm * pos_norm, axis=1)  # Shape: [sampNum]
+		pos_sim = tf.expand_dims(pos_sim, axis=1)  # Shape: [sampNum, 1]
 		
-		# Reshape for broadcasting
-		anchor_norm_expanded = tf.expand_dims(anchor_norm, axis=1)  # Shape: [sampNum, 1, latdim]
-		neg_norm_expanded = tf.expand_dims(neg_norm, axis=0)  # Shape: [1, sampNum, latdim]
+		# MEMORY OPTIMIZATION: Limit the number of negative samples per anchor
+		# This dramatically reduces the memory requirement while preserving the learning signal
+		max_neg_samples = 50  # A smaller fixed number of negatives per anchor
+		neg_count = tf.minimum(tf.shape(neg_norm)[0], max_neg_samples)
 		
-		# Compute all anchor-negative similarities
-		neg_sim = tf.reduce_sum(
-			anchor_norm_expanded * neg_norm_expanded, axis=2
-		)  # Shape: [sampNum, sampNum]
+		# Randomly sample a subset of negatives if we have more than max_neg_samples
+		neg_indices = tf.random.shuffle(tf.range(tf.shape(neg_norm)[0]))[:neg_count]
+		neg_norm_subset = tf.gather(neg_norm, neg_indices)
+		
+		# Compute similarities with the subset of negative items - MEMORY EFFICIENT
+		# Shape: [sampNum, latdim] × [latdim, neg_subset] = [sampNum, neg_subset]
+		neg_sim = tf.matmul(anchor_norm, tf.transpose(neg_norm_subset))
 		
 		# Concatenate positive and negative similarities
-		# Shape: [sampNum, 1 + sampNum]
-		logits = tf.concat([tf.expand_dims(pos_sim, axis=1), neg_sim], axis=1)
+		# Shape: [sampNum, 1 + neg_subset]
+		logits = tf.concat([pos_sim, neg_sim], axis=1)
 		
 		# Scale logits by temperature
 		logits = logits / args.temp

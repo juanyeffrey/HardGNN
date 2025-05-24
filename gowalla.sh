@@ -4,6 +4,9 @@ set -e  # exit on any error
 # Set GPU device
 export CUDA_VISIBLE_DEVICES=0
 
+# Enable Python unbuffered mode for immediate output
+export PYTHONUNBUFFERED=1
+
 # Activate venv if using one
 # source /path/to/your/python37/venv/bin/activate
 
@@ -25,7 +28,7 @@ python3.7 main.py \
   --temp 0.1 \
   --save_path gowalla \
   --epoch 150 \
-  --batch 64 \
+  --batch 512 \
   --graphNum 3 \
   --gnn_layer 2 \
   --att_layer 1 \
