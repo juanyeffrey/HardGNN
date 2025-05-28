@@ -23,4 +23,4 @@ if __name__ == '__main__':
 	tf.set_random_seed(100)
 	with tf.Session(config=config) as sess:
 		recom = Recommender(sess, handler)
-		recom.run()
+		recom.run() 
