@@ -1,20 +1,29 @@
-from ast import arg
-from curses import meta
-from site import USER_BASE
-from matplotlib.cbook import silent_list
-from Params import args
-import Utils.NNLayers as NNs
-from Utils.NNLayers import FC, Regularize, Activate, Dropout, Bias, getParam, defineParam, defineRandomNameParam
-import tensorflow as tf
-from tensorflow.core.protobuf import config_pb2
-import pickle
-import Utils.TimeLogger as logger
+# TensorFlow 2.x Compatible HardGNN Model - PRODUCTION VERSION
+# This is the single main model for Google Colab Pro+ deployment
+# Preserves all original SelfGNN functionality with hard negative sampling enhancement
+
+import os
 import numpy as np
-from Utils.TimeLogger import log
-from DataHandler import negSamp,negSamp_fre, transpose, DataHandler, transToLsts
-from Utils.attention import AdditiveAttention,MultiHeadSelfAttention
+import tensorflow as tf
+import pickle
 import scipy.sparse as sp
 from random import randint
+
+# Enable TensorFlow 1.x behavior in TensorFlow 2.x environment
+tf.compat.v1.disable_eager_execution()
+tf.compat.v1.disable_v2_behavior()
+
+from Params import args
+import Utils.NNLayers_tf2 as NNs
+from Utils.NNLayers_tf2 import FC, Regularize, Activate, Dropout, Bias, getParam, defineParam, defineRandomNameParam
+from Utils.attention_tf2 import AdditiveAttention, MultiHeadSelfAttention
+import Utils.TimeLogger as logger
+from Utils.TimeLogger import log
+from DataHandler import negSamp, negSamp_fre, transpose, DataHandler, transToLsts
+
+print("✅ Using TensorFlow 2.x compatible HardGNN model (PRODUCTION)")
+print(f"TensorFlow version: {tf.__version__}")
+
 class Recommender:
 	def __init__(self, sess, handler):
 		self.sess = sess
@@ -46,7 +55,7 @@ class Recommender:
 			stloc = len(self.metrics['TrainLoss']) * args.tstEpoch - (args.tstEpoch - 1)
 		else:
 			stloc = 0
-			init = tf.global_variables_initializer()
+			init = tf.compat.v1.global_variables_initializer()
 			self.sess.run(init)
 			log('Variables Inited')
 		maxndcg=0.0
@@ -68,8 +77,7 @@ class Recommender:
 		reses = self.testEpoch()
 		log(self.makePrint('Test', args.epoch, reses, True))
 		log(self.makePrint('max', maxepoch, maxres, True))
-		# self.saveHistory()
-	# def LightGcn(self, adj, )
+
 	def makeTimeEmbed(self):
 		divTerm = 1 / (10000 ** (tf.range(0, args.latdim * 2, 2, dtype=tf.float32) / args.latdim))
 		pos = tf.expand_dims(tf.range(0, self.maxTime, dtype=tf.float32), axis=-1)
@@ -77,44 +85,41 @@ class Recommender:
 		cosine = tf.expand_dims(tf.math.cos(pos * divTerm) / np.sqrt(args.latdim), axis=-1)
 		timeEmbed = tf.reshape(tf.concat([sine, cosine], axis=-1), [self.maxTime, args.latdim*2]) / 4.0
 		return timeEmbed
+
 	def messagePropagate(self, srclats, mat, type='user'):
 		timeEmbed = FC(self.timeEmbed, args.latdim, reg=True)
 		srcNodes = tf.squeeze(tf.slice(mat.indices, [0, 1], [-1, 1]))
 		tgtNodes = tf.squeeze(tf.slice(mat.indices, [0, 0], [-1, 1]))
 		edgeVals = mat.values
-		# print(srcNodes,tgtNodes)
-		srcEmbeds = tf.nn.embedding_lookup(srclats, srcNodes) #+ tf.nn.embedding_lookup(timeEmbed, edgeVals)
+		srcEmbeds = tf.nn.embedding_lookup(srclats, srcNodes)
 		lat=tf.pad(tf.math.segment_sum(srcEmbeds, tgtNodes),[[0,100],[0,0]])
 		if(type=='user'):
 			lat=tf.nn.embedding_lookup(lat,self.users)
 		else:
 			lat=tf.nn.embedding_lookup(lat,self.items)
 		return Activate(lat, self.actFunc)
+
 	def edgeDropout(self, mat):
 		def dropOneMat(mat):
-			# print("drop",mat)
 			indices = mat.indices
 			values = mat.values
 			shape = mat.dense_shape
-			# newVals = tf.to_float(tf.sign(tf.nn.dropout(values, self.keepRate)))
 			newVals = tf.nn.dropout(tf.cast(values,dtype=tf.float32), self.keepRate)
 			return tf.sparse.SparseTensor(indices, tf.cast(newVals,dtype=tf.int32), shape)
 		return dropOneMat(mat)
-	# cross-view collabrative Supervision
+
 	def ours(self):
 		user_vector,item_vector=list(),list()
-		# user_vector_short,item_vector_short=list(),list()
-		# embedding
-		uEmbed=NNs.defineParam('uEmbed', [args.graphNum, args.user, args.latdim], reg=True) # args.graphNum, 
-		iEmbed=NNs.defineParam('iEmbed', [args.graphNum, args.item, args.latdim], reg=True)	# args.graphNum,
-		# iEmbed_att=NNs.defineParam('iEmbed_att', [args.item, args.latdim], reg=True)	
+		# Embedding layers
+		uEmbed=NNs.defineParam('uEmbed', [args.graphNum, args.user, args.latdim], reg=True)
+		iEmbed=NNs.defineParam('iEmbed', [args.graphNum, args.item, args.latdim], reg=True)
 		posEmbed=NNs.defineParam('posEmbed', [args.pos_length, args.latdim], reg=True)
 		pos= tf.tile(tf.expand_dims(tf.range(args.pos_length),axis=0),[args.batch,1])
 		self.items=tf.range(args.item)
 		self.users=tf.range(args.user)
-		# self.timeEmbed = tf.Variable(initial_value=self.makeTimeEmbed(), shape=[self.maxTime, args.latdim*2], name='timeEmbed', trainable=True)
-		# NNs.addReg('timeEmbed', self.timeEmbed)
 		self.timeEmbed=NNs.defineParam('timeEmbed', [self.maxTime+1, args.latdim], reg=True)
+
+		# Graph neural network layers
 		for k in range(args.graphNum):
 			embs0=[uEmbed[k]]
 			embs1=[iEmbed[k]]
@@ -123,59 +128,71 @@ class Recommender:
 				a_emb1= self.messagePropagate(embs0[-1],self.edgeDropout(self.subTpAdj[k]),'item')
 				embs0.append(a_emb0+embs0[-1]) 
 				embs1.append(a_emb1+embs1[-1]) 
-			user=tf.add_n(embs0)# +tf.tile(timeUEmbed[k],[args.user,1])
-			item=tf.add_n(embs1)# +tf.tile(timeIEmbed[k],[args.item,1])
+			user=tf.add_n(embs0)
+			item=tf.add_n(embs1)
 			user_vector.append(user)
 			item_vector.append(item)
-		# now user_vector is [g,u,latdim]
+
 		user_vector=tf.stack(user_vector,axis=0)
 		item_vector=tf.stack(item_vector,axis=0)
 		user_vector_tensor=tf.transpose(user_vector, perm=[1, 0, 2])
-		item_vector_tensor=tf.transpose(item_vector, perm=[1, 0, 2])		
+		item_vector_tensor=tf.transpose(item_vector, perm=[1, 0, 2])
+
+		# TF2-compatible RNN cells
 		def gru_cell(): 
-			return tf.contrib.rnn.BasicLSTMCell(args.latdim)
+			return tf.compat.v1.nn.rnn_cell.BasicLSTMCell(args.latdim)
 		def dropout():
 			cell = gru_cell()
-			return tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=self.keepRate)
+			return tf.compat.v1.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=self.keepRate)
+
 		with tf.name_scope("rnn"):
 			cells = [dropout() for _ in range(1)]
-			rnn_cell = tf.contrib.rnn.MultiRNNCell(cells, state_is_tuple=True)        
-			user_vector_rnn, _ = tf.nn.dynamic_rnn(cell=rnn_cell, inputs=user_vector_tensor, dtype=tf.float32)
-			item_vector_rnn, _ = tf.nn.dynamic_rnn(cell=rnn_cell, inputs=item_vector_tensor, dtype=tf.float32)
-			user_vector_tensor=user_vector_rnn# +user_vector_tensor
-			item_vector_tensor=item_vector_rnn# +item_vector_tensor
+			rnn_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell(cells, state_is_tuple=True)        
+			user_vector_rnn, _ = tf.compat.v1.nn.dynamic_rnn(cell=rnn_cell, inputs=user_vector_tensor, dtype=tf.float32)
+			item_vector_rnn, _ = tf.compat.v1.nn.dynamic_rnn(cell=rnn_cell, inputs=item_vector_tensor, dtype=tf.float32)
+			user_vector_tensor=user_vector_rnn
+			item_vector_tensor=item_vector_rnn
+
+		# Attention mechanisms
 		self.additive_attention0 = AdditiveAttention(args.query_vector_dim,args.latdim)
 		self.additive_attention1 = AdditiveAttention(args.query_vector_dim,args.latdim)
-
 		self.multihead_self_attention0 = MultiHeadSelfAttention(args.latdim,args.num_attention_heads)
 		self.multihead_self_attention1 = MultiHeadSelfAttention(args.latdim,args.num_attention_heads)
-		multihead_user_vector = self.multihead_self_attention0.attention(tf.contrib.layers.layer_norm(user_vector_tensor))# (tf.layers.batch_normalization(user_vector_tensor,training=self.is_train))#
-		multihead_item_vector = self.multihead_self_attention1.attention(tf.contrib.layers.layer_norm(item_vector_tensor))# (tf.layers.batch_normalization(item_vector_tensor,training=self.is_train))#
-		final_user_vector = tf.reduce_mean(multihead_user_vector,axis=1)#+user_vector_long
-		final_item_vector = tf.reduce_mean(multihead_item_vector,axis=1)#+item_vector_long
-		# Save final_item_vector as a class variable for use in hard negative sampling
+
+		# TF2-compatible layer normalization
+		multihead_user_vector = self.multihead_self_attention0.attention(tf.compat.v1.layers.layer_norm(user_vector_tensor))
+		multihead_item_vector = self.multihead_self_attention1.attention(tf.compat.v1.layers.layer_norm(item_vector_tensor))
+		final_user_vector = tf.reduce_mean(multihead_user_vector,axis=1)
+		final_item_vector = tf.reduce_mean(multihead_item_vector,axis=1)
+
+		# Save for hard negative sampling
 		self.final_item_vector = final_item_vector
-		
 		iEmbed_att=final_item_vector
-		# sequence att
+
+		# Sequence attention
 		self.multihead_self_attention_sequence = list()
 		for i in range(args.att_layer):
 			self.multihead_self_attention_sequence.append(MultiHeadSelfAttention(args.latdim,args.num_attention_heads))
-		sequence_batch=tf.contrib.layers.layer_norm(tf.matmul(tf.expand_dims(self.mask,axis=1),tf.nn.embedding_lookup(iEmbed_att,self.sequence)))
-		sequence_batch+=tf.contrib.layers.layer_norm(tf.matmul(tf.expand_dims(self.mask,axis=1),tf.nn.embedding_lookup(posEmbed,pos)))
+
+		sequence_batch=tf.compat.v1.layers.layer_norm(tf.matmul(tf.expand_dims(self.mask,axis=1),tf.nn.embedding_lookup(iEmbed_att,self.sequence)))
+		sequence_batch+=tf.compat.v1.layers.layer_norm(tf.matmul(tf.expand_dims(self.mask,axis=1),tf.nn.embedding_lookup(posEmbed,pos)))
 		att_layer=sequence_batch
 		for i in range(args.att_layer):
-			att_layer1=self.multihead_self_attention_sequence[i].attention(tf.contrib.layers.layer_norm(att_layer))
+			att_layer1=self.multihead_self_attention_sequence[i].attention(tf.compat.v1.layers.layer_norm(att_layer))
 			att_layer=Activate(att_layer1,"leakyRelu")+att_layer
 		att_user=tf.reduce_sum(att_layer,axis=1)
-		# Save att_user as a class variable for use in hard negative sampling
+
+		# Save for hard negative sampling
 		self.att_user = att_user
 		
+		# Prediction computation
 		pckIlat_att = tf.nn.embedding_lookup(iEmbed_att, self.iids)		
 		pckUlat = tf.nn.embedding_lookup(final_user_vector, self.uids)
 		pckIlat = tf.nn.embedding_lookup(final_item_vector, self.iids)
 		preds = tf.reduce_sum(pckUlat * pckIlat, axis=-1)
 		preds += tf.reduce_sum(Activate(tf.nn.embedding_lookup(att_user,self.uLocs_seq),"leakyRelu")* pckIlat_att,axis=-1)
+
+		# SSL loss computation
 		self.preds_one=list()
 		self.final_one=list()
 		sslloss = 0	
@@ -183,19 +200,18 @@ class Recommender:
 		for i in range(args.graphNum):
 			meta1=tf.concat([final_user_vector*user_vector[i],final_user_vector,user_vector[i]],axis=-1)
 			meta2=FC(meta1,args.ssldim,useBias=True,activation='leakyRelu',reg=True,reuse=True,name="meta2")
-			# meta2=FC(meta2,args.ssldim//2,useBias=True,activation='leakyRelu',reg=True,reuse=True,name="meta4")
 			user_weight.append(tf.squeeze(FC(meta2,1,useBias=True,activation='sigmoid',reg=True,reuse=True,name="meta3")))
-			# user_weight.append(tf.squeeze(FC(meta2,1,useBias=True,activation='leakyRelu',reg=True,reuse=True,name="meta3")))
 		user_weight=tf.stack(user_weight,axis=0)	
+
 		for i in range(args.graphNum):
-			sampNum = tf.shape(self.suids[i])[0] // 2 # number of pairs
+			sampNum = tf.shape(self.suids[i])[0] // 2
 			pckUlat = tf.nn.embedding_lookup(final_user_vector, self.suids[i])
 			pckIlat = tf.nn.embedding_lookup(final_item_vector, self.siids[i])
 			pckUweight =  tf.nn.embedding_lookup(user_weight[i], self.suids[i])
 			pckIlat_att = tf.nn.embedding_lookup(iEmbed_att, self.siids[i])
 			S_final = tf.reduce_sum(Activate(pckUlat* pckIlat, self.actFunc),axis=-1)
-			posPred_final = tf.stop_gradient(tf.slice(S_final, [0], [sampNum]))#.detach()
-			negPred_final = tf.stop_gradient(tf.slice(S_final, [sampNum], [-1]))#.detach()
+			posPred_final = tf.stop_gradient(tf.slice(S_final, [0], [sampNum]))
+			negPred_final = tf.stop_gradient(tf.slice(S_final, [sampNum], [-1]))
 			posweight_final = tf.slice(pckUweight, [0], [sampNum])
 			negweight_final = tf.slice(pckUweight, [sampNum], [-1])
 			S_final = posweight_final*posPred_final-negweight_final*negPred_final
@@ -210,45 +226,43 @@ class Recommender:
 		return preds, sslloss
 
 	def prepareModel(self):
-		self.keepRate = tf.placeholder(dtype=tf.float32, shape=[])
-		self.is_train = tf.placeholder_with_default(True, (), 'is_train')
+		self.keepRate = tf.compat.v1.placeholder(dtype=tf.float32, shape=[])
+		self.is_train = tf.compat.v1.placeholder_with_default(True, (), 'is_train')
 		NNs.leaky = args.leaky
 		self.actFunc = 'leakyRelu'
 		adj = self.handler.trnMat
 		idx, data, shape = transToLsts(adj, norm=True)
 		self.adj = tf.sparse.SparseTensor(idx, data, shape)
-		self.uids = tf.placeholder(name='uids', dtype=tf.int32, shape=[None])
-		self.iids = tf.placeholder(name='iids', dtype=tf.int32, shape=[None])
-		self.sequence = tf.placeholder(name='sequence', dtype=tf.int32, shape=[args.batch,args.pos_length])
-		self.mask = tf.placeholder(name='mask', dtype=tf.float32, shape=[args.batch,args.pos_length])
-		self.uLocs_seq = tf.placeholder(name='uLocs_seq', dtype=tf.int32, shape=[None])
+		self.uids = tf.compat.v1.placeholder(name='uids', dtype=tf.int32, shape=[None])
+		self.iids = tf.compat.v1.placeholder(name='iids', dtype=tf.int32, shape=[None])
+		self.sequence = tf.compat.v1.placeholder(name='sequence', dtype=tf.int32, shape=[args.batch,args.pos_length])
+		self.mask = tf.compat.v1.placeholder(name='mask', dtype=tf.float32, shape=[args.batch,args.pos_length])
+		self.uLocs_seq = tf.compat.v1.placeholder(name='uLocs_seq', dtype=tf.int32, shape=[None])
 		self.suids=list()
 		self.siids=list()
 		self.suLocs_seq=list()
 		for k in range(args.graphNum):
-			self.suids.append(tf.placeholder(name='suids%d'%k, dtype=tf.int32, shape=[None]))
-			self.siids.append(tf.placeholder(name='siids%d'%k, dtype=tf.int32, shape=[None]))
-			self.suLocs_seq.append(tf.placeholder(name='suLocs%d'%k, dtype=tf.int32, shape=[None]))
+			self.suids.append(tf.compat.v1.placeholder(name='suids%d'%k, dtype=tf.int32, shape=[None]))
+			self.siids.append(tf.compat.v1.placeholder(name='siids%d'%k, dtype=tf.int32, shape=[None]))
+			self.suLocs_seq.append(tf.compat.v1.placeholder(name='suLocs%d'%k, dtype=tf.int32, shape=[None]))
 		self.subAdj=list()
 		self.subTpAdj=list()
-		# self.subAdjNp=list()
 		for i in range(args.graphNum):
 			seqadj = self.handler.subMat[i]
 			idx, data, shape = transToLsts(seqadj, norm=True)
-			print("1",shape)
 			self.subAdj.append(tf.sparse.SparseTensor(idx, data, shape))
 			idx, data, shape = transToLsts(transpose(seqadj), norm=True)
 			self.subTpAdj.append(tf.sparse.SparseTensor(idx, data, shape))
-			print("2",shape)
 		self.maxTime=self.handler.maxTime
-		#############################################################################
+
+		# Main model computation
 		self.preds, self.sslloss = self.ours()
 		sampNum = tf.shape(self.uids)[0] // 2
-		self.posPred = tf.slice(self.preds, [0], [sampNum])# begin at 0, size = sampleNum
-		self.negPred = tf.slice(self.preds, [sampNum], [-1])# 
-		self.preLoss = tf.reduce_mean(tf.maximum(0.0, 1.0 - (self.posPred - self.negPred)))# +tf.reduce_mean(tf.maximum(0.0,self.negPred))
+		self.posPred = tf.slice(self.preds, [0], [sampNum])
+		self.negPred = tf.slice(self.preds, [sampNum], [-1])
+		self.preLoss = tf.reduce_mean(tf.maximum(0.0, 1.0 - (self.posPred - self.negPred)))
 		
-		# Add InfoNCE contrastive loss if hard negative sampling is enabled
+		# Hard negative sampling with InfoNCE loss
 		if args.use_hard_neg:
 			self.contrastive_loss = self.compute_infonce_loss(sampNum)
 		else:
@@ -256,71 +270,54 @@ class Recommender:
 			
 		self.regLoss = args.reg * Regularize() + args.ssl_reg * self.sslloss
 		
-		# Add contrastive loss to the final loss with weighting parameter
+		# Combined loss with contrastive component
 		if args.use_hard_neg:
 			self.loss = self.preLoss + self.regLoss + args.contrastive_weight * self.contrastive_loss
 		else:
 			self.loss = self.preLoss + self.regLoss
 
 		globalStep = tf.Variable(0, trainable=False)
-		learningRate = tf.train.exponential_decay(args.lr, globalStep, args.decay_step, args.decay, staircase=True)
-		self.optimizer = tf.train.AdamOptimizer(learningRate).minimize(self.loss, global_step=globalStep)
+		learningRate = tf.compat.v1.train.exponential_decay(args.lr, globalStep, args.decay_step, args.decay, staircase=True)
+		self.optimizer = tf.compat.v1.train.AdamOptimizer(learningRate).minimize(self.loss, global_step=globalStep)
 
 	def compute_infonce_loss(self, sampNum):
 		"""
-		Compute InfoNCE contrastive loss to enhance discriminative power
-		with optimized memory usage
-		
-		Args:
-			sampNum: Number of positive samples
-			
-		Returns:
-			InfoNCE loss value
+		Compute InfoNCE contrastive loss for hard negative sampling
+		Memory-optimized implementation for Google Colab Pro+
 		"""
-		# Get short-term user representations from attention output
+		# Get user and item representations
 		user_reps = tf.nn.embedding_lookup(self.att_user, self.uLocs_seq)
-		
-		# Get item representations
 		item_reps = tf.nn.embedding_lookup(self.final_item_vector, self.iids)
 		
 		# Split into anchor-positive and anchor-negative pairs
-		anchor_reps = user_reps[:sampNum]  # User representations for positive samples
-		pos_item_reps = item_reps[:sampNum]  # Positive item representations
-		neg_item_reps = item_reps[sampNum:]  # Negative item representations (hard negatives)
+		anchor_reps = user_reps[:sampNum]
+		pos_item_reps = item_reps[:sampNum]
+		neg_item_reps = item_reps[sampNum:]
 		
 		# Normalize embeddings for cosine similarity
 		anchor_norm = tf.nn.l2_normalize(anchor_reps, axis=1)
 		pos_norm = tf.nn.l2_normalize(pos_item_reps, axis=1)
 		neg_norm = tf.nn.l2_normalize(neg_item_reps, axis=1)
 		
-		# Compute cosine similarity for positive pairs
-		pos_sim = tf.reduce_sum(anchor_norm * pos_norm, axis=1)  # Shape: [sampNum]
-		pos_sim = tf.expand_dims(pos_sim, axis=1)  # Shape: [sampNum, 1]
+		# Compute positive similarities
+		pos_sim = tf.reduce_sum(anchor_norm * pos_norm, axis=1)
+		pos_sim = tf.expand_dims(pos_sim, axis=1)
 		
-		# MEMORY OPTIMIZATION: Limit the number of negative samples per anchor
-		# This dramatically reduces the memory requirement while preserving the learning signal
-		max_neg_samples = 50  # A smaller fixed number of negatives per anchor
+		# Memory optimization: limit negative samples
+		max_neg_samples = 50
 		neg_count = tf.minimum(tf.shape(neg_norm)[0], max_neg_samples)
-		
-		# Randomly sample a subset of negatives if we have more than max_neg_samples
 		neg_indices = tf.random.shuffle(tf.range(tf.shape(neg_norm)[0]))[:neg_count]
 		neg_norm_subset = tf.gather(neg_norm, neg_indices)
 		
-		# Compute similarities with the subset of negative items - MEMORY EFFICIENT
-		# Shape: [sampNum, latdim] × [latdim, neg_subset] = [sampNum, neg_subset]
+		# Compute negative similarities
 		neg_sim = tf.matmul(anchor_norm, tf.transpose(neg_norm_subset))
 		
-		# Concatenate positive and negative similarities
-		# Shape: [sampNum, 1 + neg_subset]
+		# Concatenate and apply temperature
 		logits = tf.concat([pos_sim, neg_sim], axis=1)
-		
-		# Scale logits by temperature
 		logits = logits / args.temp
 		
-		# Labels are always 0 because positive is at position 0
+		# InfoNCE loss
 		labels = tf.zeros(sampNum, dtype=tf.int32)
-		
-		# Compute cross entropy loss
 		infonce_loss = tf.reduce_mean(
 			tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=logits)
 		)
@@ -338,10 +335,9 @@ class Recommender:
 		sequence = [None] * args.batch
 		mask = [None]*args.batch
 		cur = 0				
-		# utime = [[list(),list()] for x in range(args.graphNum)]
+
 		for i in range(batch):
 			posset=self.handler.sequence[batIds[i]][:-1]
-			# posset = np.reshape(np.argwhere(temLabel[i]!=0), [-1])
 			sampNum = min(train_sample_num, len(posset))
 			choose=1
 			if sampNum == 0:
@@ -349,11 +345,10 @@ class Recommender:
 				neglocs = [poslocs[0]]
 			else:
 				poslocs = []
-				# choose = 1
 				choose = randint(1,max(min(args.pred_num+1,len(posset)-3),1))
 				poslocs.extend([posset[-choose]]*sampNum)
 				
-				# Use hard negative sampling if enabled
+				# Hard negative sampling
 				if args.use_hard_neg:
 					neglocs = self.sample_hard_negatives(batIds[i], temLabel[i], sampNum)
 				else:
@@ -369,7 +364,7 @@ class Recommender:
 				cur += 1
 			sequence[i]=np.zeros(args.pos_length,dtype=int)
 			mask[i]=np.zeros(args.pos_length)
-			posset=posset[:-choose]# self.handler.sequence[batIds[i]][:-choose]
+			posset=posset[:-choose]
 			if(len(posset)<=args.pos_length):
 				sequence[i][-len(posset):]=posset
 				mask[i][-len(posset):]=1
@@ -383,37 +378,23 @@ class Recommender:
 			for i in range(batch,args.batch):
 				sequence[i]=np.zeros(args.pos_length,dtype=int)
 				mask[i]=np.zeros(args.pos_length)
-		return uLocs, iLocs, sequence,mask, uLocs_seq# ,utime
+		return uLocs, iLocs, sequence,mask, uLocs_seq
 
 	def sample_hard_negatives(self, user_id, user_interactions, sampNum):
 		"""
-		Sample hard negatives for a given user based on cosine similarity.
-		
-		Args:
-			user_id: The ID of the user
-			user_interactions: Array of user's interactions (1 for interacted items, 0 otherwise)
-			sampNum: Number of hard negatives to sample
-			
-		Returns:
-			List of hard negative item IDs
+		Sample hard negatives based on cosine similarity
 		"""
-		# Get the user's short-term embedding (we'll use multihead attention output for this)
-		user_seq = self.handler.sequence[user_id][:-1]  # All but the last item
+		user_seq = self.handler.sequence[user_id][:-1]
 		if len(user_seq) == 0:
-			# Fallback to random sampling if no history
 			return negSamp(user_interactions, sampNum, args.item, 
 				[self.handler.sequence[user_id][-1] if len(self.handler.sequence[user_id]) > 0 else None, 
 				self.handler.tstInt[user_id]], self.handler.item_with_pop)
 		
-		# Get item embeddings for computing similarity
-		# This happens during training, so we'll use the current session to run a forward pass
+		# Prepare feed dictionary for forward pass
 		feed_dict = {}
-		
-		# Create a batch of the expected size (args.batch)
 		seq_batch = np.zeros((args.batch, args.pos_length), dtype=int)
 		mask_batch = np.zeros((args.batch, args.pos_length))
 		
-		# Fill sequence and mask for the user we care about (first position)
 		if len(user_seq) <= args.pos_length:
 			seq_batch[0, -len(user_seq):] = user_seq
 			mask_batch[0, -len(user_seq):] = 1
@@ -426,70 +407,51 @@ class Recommender:
 		feed_dict[self.is_train] = False
 		feed_dict[self.keepRate] = 1.0
 		
-		# Also need to provide placeholders for other required inputs
-		# Create dummy values for required placeholders
-		dummy_uids = np.zeros(2, dtype=np.int32)  # Just need some values
-		dummy_iids = np.zeros(2, dtype=np.int32)
-		dummy_ulocs_seq = np.zeros(2, dtype=np.int32)
+		# Dummy values for required placeholders
+		dummy_vals = np.zeros(2, dtype=np.int32)
+		feed_dict[self.uids] = dummy_vals
+		feed_dict[self.iids] = dummy_vals
+		feed_dict[self.uLocs_seq] = dummy_vals
 		
-		feed_dict[self.uids] = dummy_uids
-		feed_dict[self.iids] = dummy_iids
-		feed_dict[self.uLocs_seq] = dummy_ulocs_seq
-		
-		# Add dummy values for suids, siids, and suLocs_seq
 		for k in range(args.graphNum):
-			feed_dict[self.suids[k]] = dummy_uids
-			feed_dict[self.siids[k]] = dummy_iids
-			feed_dict[self.suLocs_seq[k]] = dummy_ulocs_seq
+			feed_dict[self.suids[k]] = dummy_vals
+			feed_dict[self.siids[k]] = dummy_vals
+			feed_dict[self.suLocs_seq[k]] = dummy_vals
 		
-		# Get the short-term representation for this user by running a forward pass
 		try:
-			# Get all item embeddings and user's short-term embedding
+			# Get embeddings
 			items_embed, user_att = self.sess.run([self.final_item_vector, self.att_user], feed_dict=feed_dict)
+			user_embed = user_att[0]
 			
-			# Compute cosine similarity between user's short-term embedding and all items
-			user_embed = user_att[0]  # First user in the batch (the one we care about)
-			
-			# Normalize embeddings for cosine similarity
+			# Compute cosine similarities
 			user_norm = np.linalg.norm(user_embed)
 			items_norm = np.linalg.norm(items_embed, axis=1)
-			
-			# Avoid division by zero
 			user_norm = max(user_norm, 1e-10)
 			items_norm = np.maximum(items_norm, 1e-10)
-			
-			# Compute cosine similarity
 			similarities = np.sum(user_embed * items_embed, axis=1) / (user_norm * items_norm)
 			
-			# Exclude items the user has interacted with
+			# Exclude interacted items
 			interacted_items = np.where(user_interactions > 0)[0]
-			
-			# Also exclude test item if available
 			exclude_items = list(interacted_items)
 			if self.handler.tstInt[user_id] is not None:
 				exclude_items.append(self.handler.tstInt[user_id])
-			
-			# Set similarity of interacted items to -inf
 			similarities[exclude_items] = -np.inf
 			
-			# Get top-k items with highest similarity
+			# Get hard negatives
 			hard_neg_indices = np.argsort(similarities)[-args.hard_neg_top_k:]
 			
-			# If we need more negatives than hard_neg_top_k, fill with random samples
 			if sampNum > len(hard_neg_indices):
 				additional_negs = negSamp(user_interactions, sampNum - len(hard_neg_indices), 
 										args.item, [self.handler.sequence[user_id][-1], self.handler.tstInt[user_id]], 
 										self.handler.item_with_pop)
 				return list(hard_neg_indices) + additional_negs
 			
-			# If we need fewer, randomly sample from hard negatives
 			if sampNum < len(hard_neg_indices):
 				return np.random.choice(hard_neg_indices, sampNum, replace=False).tolist()
 			
 			return hard_neg_indices.tolist()
 			
 		except Exception as e:
-			# Fallback to random sampling if any error occurs
 			print(f"Error in hard negative sampling: {e}")
 			return negSamp(user_interactions, sampNum, args.item, 
 				[self.handler.sequence[user_id][-1], self.handler.tstInt[user_id]], 
@@ -504,19 +466,17 @@ class Recommender:
 		uLocs = [[None] * temlen] * args.graphNum
 		iLocs = [[None] * temlen] * args.graphNum
 		uLocs_seq = [[None] * temlen] * args.graphNum
-		# epsilon=[[None] * temlen] * args.graphNum
+
 		for k in range(args.graphNum):	
 			cur = 0				
 			for i in range(batch):
 				posset = np.reshape(np.argwhere(temLabel[k][i]!=0), [-1])
-				# print(posset)
-				sslNum = min(args.sslNum, len(posset)//2)# len(posset)//4# 
+				sslNum = min(args.sslNum, len(posset)//2)
 				if sslNum == 0:
 					poslocs = [np.random.choice(args.item)]
 					neglocs = [poslocs[0]]
 				else:
-					all = np.random.choice(posset, sslNum*2) #- args.user
-					# print(all)
+					all = np.random.choice(posset, sslNum*2)
 					poslocs = all[:sslNum]
 					neglocs = all[sslNum:]
 				for j in range(sslNum):
@@ -540,6 +500,7 @@ class Recommender:
 		num = len(sfIds)
 		sample_num_list=[40]		
 		steps = int(np.ceil(num / args.batch))
+
 		for s in range(len(sample_num_list)):
 			for i in range(steps):
 				st = i * args.batch
@@ -553,11 +514,9 @@ class Recommender:
 					
 				feed_dict = {}
 				uLocs, iLocs, sequence, mask, uLocs_seq= self.sampleTrainBatch(batIds, self.handler.trnMat, self.handler.timeMat, sample_num_list[s])
-				# esuLocs, esiLocs, epsilon = self.sampleSslBatch(batIds, self.handler.subadj)
 				suLocs, siLocs, suLocs_seq = self.sampleSslBatch(batIds, self.handler.subMat, False)
 				feed_dict[self.uids] = uLocs
 				feed_dict[self.iids] = iLocs
-				# print("train",uLocs,uLocs_seq)
 				feed_dict[self.sequence] = sequence
 				feed_dict[self.mask] = mask
 				feed_dict[self.is_train] = True
@@ -569,7 +528,8 @@ class Recommender:
 					feed_dict[self.suLocs_seq[k]] = suLocs_seq[k]
 				feed_dict[self.keepRate] = args.keepRate
 
-				res = self.sess.run(target, feed_dict=feed_dict, options=config_pb2.RunOptions(report_tensor_allocations_upon_oom=True))
+				# TF2-compatible session run without config_pb2
+				res = self.sess.run(target, feed_dict=feed_dict)
 
 				if args.use_hard_neg:
 					preLoss, regLoss, loss, contrastiveLoss, pos, neg, pone = res[1:]
@@ -591,11 +551,11 @@ class Recommender:
 			ret['contrastiveLoss'] = epochContrastiveLoss / steps
 		return ret
 
-	def sampleTestBatch(self, batIds, labelMat): # labelMat=TrainMat(adj)
+	def sampleTestBatch(self, batIds, labelMat):
 		batch = len(batIds)
 		temTst = self.handler.tstInt[batIds]
 		temLabel = labelMat[batIds].toarray()
-		temlen = batch * args.testSize# args.item
+		temlen = batch * args.testSize
 		uLocs = [None] * temlen
 		iLocs = [None] * temlen
 		uLocs_seq = [None] * temlen
@@ -604,6 +564,7 @@ class Recommender:
 		mask = [None]*args.batch
 		cur = 0
 		val_list=[None]*args.batch
+
 		for i in range(batch):
 			if(args.test==True):
 				posloc = temTst[i]
@@ -624,7 +585,7 @@ class Recommender:
 				posset=self.handler.sequence[batIds[i]]
 			else:
 				posset=self.handler.sequence[batIds[i]][:-1]
-			# posset=self.handler.sequence[batIds[i]]
+
 			if(len(posset)<=args.pos_length):
 				sequence[i][-len(posset):]=posset
 				mask[i][-len(posset):]=1
@@ -647,7 +608,7 @@ class Recommender:
 		num = len(ids)
 		tstBat = args.batch
 		steps = int(np.ceil(num / tstBat))
-		# np.random.seed(100)
+
 		for i in range(steps):
 			st = i * tstBat
 			ed = min((i+1) * tstBat, num)
@@ -661,12 +622,15 @@ class Recommender:
 			feed_dict[self.sequence] = sequence
 			feed_dict[self.mask] = mask
 			feed_dict[self.uLocs_seq] = uLocs_seq
-			# print("test",uLocs_seq)
+
 			for k in range(args.graphNum):
 				feed_dict[self.suids[k]] = suLocs[k]
 				feed_dict[self.siids[k]] = siLocs[k]
 			feed_dict[self.keepRate] = 1.0
-			preds = self.sess.run(self.preds, feed_dict=feed_dict, options=config_pb2.RunOptions(report_tensor_allocations_upon_oom=True))
+
+			# TF2-compatible session run
+			preds = self.sess.run(self.preds, feed_dict=feed_dict)
+
 			if(args.uid!=-1):
 				print(preds[args.uid])
 			if(args.test==True):
@@ -684,6 +648,7 @@ class Recommender:
 			epochHit1 += hit1
 			epochNdcg1 += ndcg1
 			log('Steps %d/%d: hit10 = %d, ndcg10 = %d' % (i, steps, hit, ndcg), save=False, oneline=True)
+
 		ret = dict()
 		ret['HR'] = epochHit / num
 		ret['NDCG'] = epochNdcg / num
@@ -724,14 +689,13 @@ class Recommender:
 			return
 		with open('History/' + args.save_path + '.his', 'wb') as fs:
 			pickle.dump(self.metrics, fs)
-
-		saver = tf.train.Saver()
+		saver = tf.compat.v1.train.Saver()
 		saver.save(self.sess, 'Models/' + args.save_path)
 		log('Model Saved: %s' % args.save_path)
 
 	def loadModel(self):
-		saver = tf.train.Saver()
+		saver = tf.compat.v1.train.Saver()
 		saver.restore(self.sess, 'Models/' + args.load_model)
 		with open('History/' + args.load_model + '.his', 'rb') as fs:
 			self.metrics = pickle.load(fs)
-		log('Model Loaded')	
+		log('Model Loaded') 

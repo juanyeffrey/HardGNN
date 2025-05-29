@@ -52,6 +52,9 @@ def parse_args():
 	parser.add_argument('--use_hard_neg', default=False, type=bool, help='use hard negative sampling')
 	parser.add_argument('--hard_neg_top_k', default=5, type=int, help='number of hard negatives to sample')
 	parser.add_argument('--contrastive_weight', default=0.1, type=float, help='weight for contrastive loss')
+	# Additional parameters for model compatibility
+	parser.add_argument('--seq_length', default=200, type=int, help='sequence length for sequential model')
+	parser.add_argument('--time_split', default=3600, type=int, help='time split for temporal modeling')
 	return parser.parse_args()
 args = parse_args()
 args.decay_step = args.trnNum//args.batch

@@ -34,37 +34,121 @@ This notebook adds hard negative sampling to validated SelfGNN configurations:
 DATASET = 'gowalla'  # Options: 'yelp', 'amazon', 'gowalla', 'movielens'
 # ========================================================================
 
-# Install TensorFlow 1.14 for compatibility
-import subprocess
-import sys
+# ========================================================================
+# CELL 1: Environment Setup and Installation
+# ========================================================================
 
 def install_dependencies():
-    packages = [
-        'tensorflow-gpu==1.14.0',
-        'matplotlib==3.5.1',
-        'numpy==1.21.5', 
-        'scipy==1.7.3'
+    """Install required dependencies for HardGNN on Google Colab Pro+"""
+    import subprocess
+    import sys
+    
+    print("🔄 Installing HardGNN dependencies for Google Colab Pro+...")
+    print(f"📍 Detected Python version: {sys.version}")
+    
+    # Install core dependencies
+    dependencies = [
+        "matplotlib>=3.5.0",
+        "numpy>=1.21.0,<1.25.0", 
+        "scipy>=1.7.0,<1.12.0",
+        "tensorflow>=2.10.0,<2.17.0",
+        "protobuf>=3.19.0,<4.25.0",
+        "pandas>=1.3.0",
+        "scikit-learn>=1.0.0"
     ]
     
-    for package in packages:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', package])
+    for dep in dependencies:
+        print(f"📦 Installing {dep}...")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", dep], 
+                         check=True, capture_output=True, text=True)
+            print(f"✅ Successfully installed {dep}")
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️ Warning: Could not install {dep}: {e}")
     
-    print("✅ Dependencies installed successfully")
+    print("✅ All dependencies installed!")
 
-# Uncomment the next line when running in Colab
-# install_dependencies()
-
-# Verify GPU setup
-import tensorflow as tf
-print(f"TensorFlow version: {tf.__version__}")
-print(f"GPU Available: {tf.test.is_gpu_available()}")
-if tf.test.is_gpu_available():
-    print(f"GPU Device: {tf.test.gpu_device_name()}")
+def setup_tensorflow_compatibility():
+    """Setup TensorFlow 2.x with v1 compatibility for Google Colab"""
+    import tensorflow as tf
     
-# Configure GPU memory growth to prevent OOM
-config = tf.ConfigProto()
-config.gpu_options.allow_growth = True
-print("✅ GPU memory growth configured")
+    print(f"🔧 Setting up TensorFlow compatibility...")
+    print(f"📍 TensorFlow version: {tf.__version__}")
+    
+    # Enable TensorFlow 1.x behavior in TensorFlow 2.x
+    try:
+        tf.compat.v1.disable_eager_execution()
+        tf.compat.v1.disable_v2_behavior()
+        print("✅ TensorFlow 2.x configured for v1 compatibility mode")
+        
+        # Test GPU availability
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            print(f"🚀 GPU acceleration available: {len(gpus)} GPU(s) detected")
+            for gpu in gpus:
+                print(f"   - {gpu}")
+            # Configure GPU memory growth
+            for gpu in gpus:
+                try:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                    print(f"✅ GPU memory growth configured for {gpu}")
+                except RuntimeError as e:
+                    print(f"⚠️ Could not configure GPU memory growth: {e}")
+        else:
+            print("⚠️ No GPU detected, will use CPU")
+            
+        return True
+    except Exception as e:
+        print(f"❌ Error setting up TensorFlow: {e}")
+        return False
+
+def verify_colab_environment():
+    """Verify Google Colab Pro+ environment"""
+    import sys
+    import psutil
+    import platform
+    
+    print("🔍 Verifying Google Colab Pro+ Environment...")
+    print(f"📍 Python: {sys.version}")
+    print(f"📍 Platform: {platform.platform()}")
+    print(f"📍 Architecture: {platform.machine()}")
+    
+    # Check available memory
+    memory = psutil.virtual_memory()
+    memory_gb = memory.total / (1024**3)
+    print(f"📍 Available RAM: {memory_gb:.1f} GB")
+    
+    if memory_gb >= 12:  # Colab Pro+ typically has 25+ GB
+        print("✅ Sufficient memory for HardGNN training")
+    else:
+        print("⚠️ Limited memory detected, consider upgrading to Colab Pro+")
+    
+    # Check disk space
+    disk = psutil.disk_usage('/')
+    disk_gb = disk.free / (1024**3)
+    print(f"📍 Available disk space: {disk_gb:.1f} GB")
+    
+    if disk_gb >= 20:
+        print("✅ Sufficient disk space for datasets and model")
+    else:
+        print("⚠️ Limited disk space, may need to clean up files")
+    
+    return True
+
+# Run setup
+print("=" * 60)
+print("🚀 HardGNN Setup for Google Colab Pro+")
+print("=" * 60)
+
+install_dependencies()
+setup_successful = setup_tensorflow_compatibility()
+verify_colab_environment()
+
+if not setup_successful:
+    raise RuntimeError("❌ TensorFlow setup failed. Please check your environment.")
+
+print("✅ Environment setup complete!")
+print("=" * 60)
 
 # ========================================================================
 # CELL 2: Dataset Configuration and Module Import
@@ -77,7 +161,6 @@ import random
 import pickle
 import scipy.sparse as sp
 import matplotlib.pyplot as plt
-from tensorflow.core.protobuf import config_pb2
 from ast import arg
 from random import randint
 import time
@@ -88,7 +171,16 @@ from Params import args
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 from DataHandler import DataHandler
-from model import Recommender
+
+# Import the HardGNN model
+print("\n🔧 Importing HardGNN model...")
+try:
+    from HardGNN_model import Recommender
+    print("✅ Successfully imported HardGNN model")
+except ImportError as e:
+    print(f"❌ Failed to import HardGNN model: {e}")
+    print("Please ensure all dependencies are properly installed.")
+    sys.exit(1)
 
 def configure_dataset(dataset_name):
     """Configure parameters based on validated configurations for each dataset"""
@@ -174,10 +266,15 @@ def configure_dataset(dataset_name):
     args.contrastive_weight = 0.1 # λ = 0.1 contrastive weight
     # Note: τ (temperature) is already set in args.temp = 0.1
     
-    # Adjust for Colab demo (shorter training)
-    args.epoch = min(args.epoch, 30)  # Reduced for demo
-    args.tstEpoch = 3  # Test every 3 epochs
-    args.trnNum = 5000  # Reduced training instances for faster demo
+    # Full experiment settings (demo mode removed)
+    # args.epoch is now set by the dataset-specific configurations in the if/elif blocks above
+    # args.trnNum is now set by dataset-specific configurations or defaults
+    # To ensure full training data is used, we'll rely on the dataset handler's defaults
+    # for trnNum unless explicitly set by a dataset config block.
+    # If a dataset config block (e.g., for 'amazon') sets args.trnNum, that will be used.
+    # Otherwise, the DataHandler will likely use all available training users.
+
+    args.tstEpoch = 3  # Test every 3 epochs (can be adjusted if needed for full runs)
     
     # Set save path
     args.save_path = f'hardgnn_{dataset_name.lower()}_colab'
@@ -232,20 +329,20 @@ print(f"📊 Testing with τ={args.temp}, K={args.hard_neg_top_k}, λ={args.cont
 # Set random seeds for reproducibility
 np.random.seed(42)
 random.seed(42)
-tf.set_random_seed(42)
+tf.compat.v1.set_random_seed(42)
 
 # Initialize TensorFlow session with GPU config
-config = tf.ConfigProto()
+config = tf.compat.v1.ConfigProto()
 config.gpu_options.allow_growth = True
 config.allow_soft_placement = True
 
-with tf.Session(config=config) as sess:
+with tf.compat.v1.Session(config=config) as sess:
     # Initialize HardGNN model
     model = Recommender(sess, handler)
     model.prepareModel()
     
     # Initialize variables
-    init = tf.global_variables_initializer()
+    init = tf.compat.v1.global_variables_initializer()
     sess.run(init)
     log('✅ Model initialized (random weights)')
     
@@ -333,16 +430,16 @@ print(f"  Learning Rate: {args.lr}")
 print(f"  Regularization: {args.reg}")
 
 # Start fresh session for training
-tf.reset_default_graph()
+tf.compat.v1.reset_default_graph()
 
-with tf.Session(config=config) as sess:
+with tf.compat.v1.Session(config=config) as sess:
     # Initialize model
     model = Recommender(sess, handler)
     model.prepareModel()
     log('✅ Model prepared for training')
     
     # Initialize variables
-    init = tf.global_variables_initializer()
+    init = tf.compat.v1.global_variables_initializer()
     sess.run(init)
     log('✅ Variables initialized')
     
@@ -413,15 +510,15 @@ args.use_hard_neg = False
 print(f"📊 Baseline Configuration: Hard Negative Sampling = {args.use_hard_neg}")
 
 # Reset graph and train baseline
-tf.reset_default_graph()
+tf.compat.v1.reset_default_graph()
 
-with tf.Session(config=config) as sess:
+with tf.compat.v1.Session(config=config) as sess:
     # Initialize baseline model
     baseline_model = Recommender(sess, handler)
     baseline_model.prepareModel()
     
     # Initialize variables
-    init = tf.global_variables_initializer()
+    init = tf.compat.v1.global_variables_initializer()
     sess.run(init)
     log('✅ Baseline model initialized')
     

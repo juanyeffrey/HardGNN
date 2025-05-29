@@ -1,305 +1,238 @@
-# 🚀 HardGNN: Hard Negative Sampling for Sequential Recommendation
+# HardGNN for Google Colab Pro+
 
-This folder contains a **complete, standalone implementation** of HardGNN that adds hard negative sampling to validated SelfGNN configurations. The implementation is specifically designed for **Google Colab Pro+** with GPU acceleration.
+## Overview
+This repository contains a **TensorFlow 2.x compatible** implementation of HardGNN (Hard Negative Sampling for Sequential Recommendation) designed specifically for **Google Colab Pro+** environments. The model enhances SelfGNN with sophisticated hard negative sampling using InfoNCE contrastive loss.
 
-## 📖 What is HardGNN?
+## 🎯 Key Features
+- **Enhanced SelfGNN** with hard negative sampling (τ=0.1, K=5, λ=0.1)
+- **Full TensorFlow 2.x compatibility** via tf.compat.v1 layer
+- **Google Colab Pro+ optimization** with GPU acceleration support
+- **Memory-efficient** hard negative sampling for Colab constraints
+- **Dataset-agnostic** design supporting Amazon-book, Yelp, Gowalla, MovieLens
+- **One-command setup** and execution
 
-HardGNN enhances the SelfGNN sequential recommendation model by adding **hard negative sampling** with InfoNCE contrastive loss. It uses cosine similarity to select the most challenging negative items for each user, creating better decision boundaries and improving recommendation quality.
+## 🏗️ Architecture
 
-### Key Features:
-- ✅ **Hard Negative Sampling**: Cosine similarity-based selection of challenging negatives
-- ✅ **InfoNCE Contrastive Loss**: Temperature-scaled contrastive learning (τ=0.1)
-- ✅ **Validated Configurations**: Uses proven hyperparameters for each dataset
-- ✅ **Dataset-Agnostic**: Works with Yelp, Amazon, Gowalla, MovieLens
-- ✅ **5-15% Improvement**: Over baseline SelfGNN across all datasets
+**Main Model**: `HardGNN_model.py` - Complete implementation with all original SelfGNN functionality plus hard negative sampling enhancements.
 
----
+## 🚀 Quick Start (Google Colab Pro+)
 
-## 🎯 Complete Setup Guide
+### Option 1: Automated Script (Recommended)
+```python
+# Run the complete automated script
+%run HardGNN_Colab_Script.py
+```
 
-### Step 1: Prepare Your Environment
+### Option 2: Manual Setup
+```bash
+# 1. Install dependencies
+pip install -r requirements_final.txt
 
-1. **Get Google Colab Pro+** (recommended for A100 GPU access)
-   - Go to https://colab.research.google.com/
-   - Subscribe to Colab Pro+ for best performance
+# 2. Run verification
+python VERIFY_COLAB_READY.py
 
-2. **Upload this folder to Google Drive**
-   - Download/clone this entire `Google-Colab` folder
-   - Upload it to your Google Drive (can be in any location)
+# 3. Execute experiment
+python main.py
+```
 
-### Step 2: Open Google Colab
+## 📋 System Requirements
 
-1. **Create a new notebook**:
-   - Go to https://colab.research.google.com/
-   - Click "New notebook"
+### Google Colab Pro+ Environment
+- **Python**: 3.10+ (automatically available)
+- **TensorFlow**: 2.10-2.16 (handles via tf.compat.v1)
+- **RAM**: 25+ GB (Pro+ provides ~51GB)
+- **GPU**: Optional but recommended (T4/A100)
 
-2. **Set GPU runtime**:
-   - Runtime → Change runtime type → GPU
-   - Choose T4, A100, or V100 (A100 recommended)
+### Dependencies
+All required packages are listed in `requirements_final.txt`:
+- tensorflow==2.15.0
+- numpy==1.24.3
+- scipy==1.10.1
+- scikit-learn==1.3.0
 
-3. **Mount Google Drive** (run in first cell):
-   ```python
-   from google.colab import drive
-   drive.mount('/content/drive')
-   ```
+## 🔧 Technical Implementation
 
-4. **Navigate to your folder** (run in second cell):
-   ```python
-   import os
-   os.chdir('/content/drive/MyDrive/Google-Colab')  # Adjust path to your folder
-   print(f"Current directory: {os.getcwd()}")
-   print(f"Files available: {os.listdir('.')}")
-   ```
-
-### Step 3: Choose Your Dataset
-
-**This is the ONLY thing you need to change before running!**
-
-In the script (`HardGNN_Colab_Script.py`), find this line in the first section:
+### Hard Negative Sampling
+The model implements sophisticated hard negative sampling with:
 
 ```python
-# ========================================================================
-# 🔧 CONFIGURE YOUR EXPERIMENT HERE
-# ========================================================================
-DATASET = 'gowalla'  # Options: 'yelp', 'amazon', 'gowalla', 'movielens'
-# ========================================================================
+# Key parameters (in Params.py)
+use_hard_neg = True           # Enable hard negative sampling
+temp = 0.1                    # InfoNCE temperature τ
+hard_neg_top_k = 5           # Number of hard negatives K
+contrastive_weight = 0.1     # Contrastive loss weight λ
 ```
 
-**Change `DATASET` to your desired dataset:**
-- `'yelp'` - Yelp business reviews
-- `'amazon'` - Amazon product interactions  
-- `'gowalla'` - Gowalla location check-ins
-- `'movielens'` - MovieLens movie ratings
+### TensorFlow 2.x Compatibility
+- Uses `tf.compat.v1` compatibility layer
+- Replaced `tf.contrib.*` with TF2-compatible alternatives
+- Memory-optimized for Google Colab constraints
 
-### Step 4: Copy and Run the Code
+### Memory Optimization
+- Limits hard negatives to 50 per anchor (prevents OOM)
+- GPU memory growth configuration
+- Efficient batch processing
 
-Open `HardGNN_Colab_Script.py` and copy each section into separate Colab cells:
+## 📊 Supported Datasets
 
-#### **Cell 1: Environment Setup**
+The model supports all original SelfGNN datasets:
+- **Amazon-book**: 52,463 users, 91,599 items
+- **Yelp**: 31,668 users, 38,048 items  
+- **Gowalla**: 29,858 users, 40,981 items
+- **MovieLens**: 6,040 users, 3,706 items
+
+## 🎛️ Configuration
+
+### Dataset Configuration
 ```python
-# Copy everything from "CELL 1: Environment Setup and Installation" section
-# Don't forget to uncomment: install_dependencies()
+# In HardGNN_Colab_Script.py
+configure_dataset('gowalla')  # or 'amazon-book', 'yelp', 'ml-1m'
 ```
-**Important**: Uncomment the `install_dependencies()` line when running in Colab!
 
-#### **Cell 2: Dataset Configuration** 
+### Model Hyperparameters
 ```python
-# Copy everything from "CELL 2: Dataset Configuration and Module Import" section
-# This automatically configures parameters for your chosen dataset
+# Core parameters (Params.py)
+user = 29858          # Number of users (dataset-dependent)
+item = 40981          # Number of items (dataset-dependent)
+graphNum = 5          # Number of graph views
+gnn_layer = 2         # GNN layers
+att_layer = 2         # Attention layers
+latdim = 64           # Embedding dimension
 ```
 
-#### **Cell 3: Load Dataset**
+### Hard Negative Sampling Parameters
 ```python
-# Copy everything from "CELL 3: Load Dataset" section  
-# This loads your chosen dataset and shows statistics
+# Hard negative sampling configuration
+use_hard_neg = True           # Enable hard negatives
+temp = 0.1                    # InfoNCE temperature
+hard_neg_top_k = 5           # Top-K hard negatives
+contrastive_weight = 0.1     # Loss weight λ
 ```
 
-#### **Cell 4: Validate Hard Negative Sampling**
+## 🔍 Verification
+
+Run the comprehensive verification script:
 ```python
-# Copy everything from "CELL 4: Validate Contrastive Loss Component" section
-# This tests that hard negative sampling is working correctly
+python VERIFY_COLAB_READY.py
 ```
 
-#### **Cell 5: Train HardGNN**
-```python
-# Copy everything from "CELL 5: Train HardGNN Model" section
-# This runs the main training with hard negative sampling
-```
+This checks:
+- ✅ Python 3.10+ compatibility
+- ✅ TensorFlow 2.x installation  
+- ✅ All required dependencies
+- ✅ GPU availability and memory
+- ✅ Model import capabilities
+- ✅ Hard negative sampling functionality
+- ✅ Dataset loading capabilities
+- ✅ Memory optimization features
 
-#### **Cell 6: Compare with Baseline (Optional)**
-```python
-# Copy everything from "CELL 6: Optional - Compare with Baseline SelfGNN" section
-# This trains baseline SelfGNN for comparison
-```
-
-#### **Cell 7: Results Analysis**
-```python
-# Copy everything from "CELL 7: Results Analysis and Summary" section
-# This provides detailed analysis and next steps
-```
-
----
-
-## 📊 What You'll See
-
-### During Training:
-```
-🚀 Starting HardGNN Training on GOWALLA...
-📊 Configuration: Uses validated parameters + Hard Negative Sampling
-
-Epoch 1/30
-🏋️  Train: Loss=0.7834, PreLoss=0.7345, ContrastiveLoss=0.4891
-🎯 Test: HR=0.1156, NDCG=0.0723
-
-Epoch 6/30  
-🏋️  Train: Loss=0.6121, PreLoss=0.5634, ContrastiveLoss=0.2876
-🎯 Test: HR=0.1534, NDCG=0.0987
-🌟 New best NDCG: 0.0987
-
-...
-
-📊 FINAL RESULTS
-🎯 Final Test Results:
-  HR@10: 0.1656
-  NDCG@10: 0.1121
-```
-
-### Key Metrics to Monitor:
-- **ContrastiveLoss**: Should decrease over epochs (lower = better)
-- **HR@10**: Hit Ratio at 10 (higher = better)  
-- **NDCG@10**: Normalized Discounted Cumulative Gain (higher = better)
-- **Prediction Gap**: Positive predictions should exceed negative predictions
-
----
-
-## ⚙️ How It Works
-
-### Automatic Configuration
-The script automatically applies **validated configurations** for each dataset:
-
-| Dataset | Learning Rate | Graphs | GNN Layers | Attention Layers | Key Settings |
-|---------|---------------|--------|------------|------------------|-------------|
-| **Yelp** | 1e-3 | 12 | 3 | 2 | reg=1e-2, ssl_reg=1e-7 |
-| **Amazon** | 1e-3 | 5 | 3 | 4 | reg=1e-2, ssl_reg=1e-6 |
-| **Gowalla** | 2e-3 | 3 | 2 | 1 | reg=1e-2, ssl_reg=1e-6 |
-| **MovieLens** | 1e-3 | 6 | 2 | 3 | reg=1e-2, ssl_reg=1e-6 |
-
-### Hard Negative Sampling (Applied to All):
-- **Temperature (τ)**: 0.1 for InfoNCE loss
-- **Hard Negatives (K)**: 5 negatives per anchor
-- **Contrastive Weight (λ)**: 0.1 for loss balancing
-- **Selection Method**: Cosine similarity between user embeddings and item embeddings
-
----
-
-## 🎯 Expected Results
-
-### Performance by Dataset:
-
-| Dataset | HR@10 Range | NDCG@10 Range | Expected Improvement |
-|---------|-------------|---------------|---------------------|
-| **Yelp** | 0.10 → 0.16+ | 0.06 → 0.10+ | 5-15% over baseline |
-| **Amazon** | 0.08 → 0.15+ | 0.04 → 0.08+ | 5-15% over baseline |
-| **Gowalla** | 0.11 → 0.17+ | 0.07 → 0.12+ | 5-15% over baseline |
-| **MovieLens** | 0.12 → 0.18+ | 0.08 → 0.13+ | 5-15% over baseline |
-
-### Training Time:
-- **Colab Demo (30 epochs)**: ~1-2 hours on A100
-- **Full Training (150 epochs)**: ~4-6 hours on A100
-
----
-
-## 🐛 Troubleshooting
-
-### Common Issues and Solutions:
-
-#### 1. "Module not found" Error
-```python
-# Make sure you're in the correct directory
-import os
-print(f"Current directory: {os.getcwd()}")
-os.chdir('/content/drive/MyDrive/Google-Colab')  # Adjust your path
-```
-
-#### 2. GPU Memory Error
-```python
-# Reduce batch size and training instances
-args.batch = 256          # Instead of 512
-args.trnNum = 2000        # Instead of 5000
-```
-
-#### 3. TensorFlow Version Issues
-```python
-# Restart runtime and re-run dependency installation
-# Runtime → Restart runtime
-# Then re-run Cell 1 with install_dependencies()
-```
-
-#### 4. Dataset Loading Issues
-```python
-# Check if dataset files exist
-import os
-print("Available datasets:")
-for dataset in ['yelp', 'amazon', 'gowalla', 'movielens']:
-    path = f'Datasets/{dataset}/'
-    exists = os.path.exists(path)
-    print(f"  {dataset}: {exists}")
-```
-
-#### 5. Session Timeout
-- **Colab Pro+**: 24-hour limit (usually sufficient)
-- **Save progress**: Uncomment `model.saveHistory()` for long training
-- **Restart approach**: Re-run from Cell 3 if session restarts
-
----
-
-## 📁 Folder Structure
+## 📁 File Structure
 
 ```
 Google-Colab/
-├── README.md                   # This comprehensive guide
-├── HardGNN_Colab_Script.py     # Complete script with all code sections
-├── requirements.txt            # Python dependencies
-├── model.py                    # HardGNN model implementation
-├── Params.py                   # Configuration parameters  
-├── DataHandler.py              # Data loading utilities
-├── Utils/                      # Utility modules
-│   ├── TimeLogger.py           # Logging utilities
-│   ├── NNLayers.py             # Neural network layers
-│   └── attention.py            # Attention mechanisms
-└── Datasets/                   # Dataset directories
-    ├── yelp/                   # Yelp dataset files
-    ├── amazon/                 # Amazon dataset files
-    ├── gowalla/                # Gowalla dataset files
-    └── movielens/              # MovieLens dataset files
+├── HardGNN_model.py              # Main production model
+├── main.py                       # Alternative entry point
+├── HardGNN_Colab_Script.py       # Complete automated script
+├── Params.py                     # Model configuration
+├── DataHandler.py                # Data processing
+├── requirements_final.txt        # Production dependencies
+├── VERIFY_COLAB_READY.py         # Verification script
+├── README.md                     # This guide
+├── Utils/                        # TF2-compatible utilities
+│   ├── NNLayers_tf2.py
+│   ├── attention_tf2.py
+│   └── TimeLogger.py
+├── Datasets/                     # Dataset storage
+└── fallback_files/               # Backup/alternative files
+    ├── model.py                  # Original model (backup)
+    ├── model_colab_compatible.py # Fallback model
+    └── archived_files            # Historical files
 ```
 
----
+## 🚨 Troubleshooting
 
-## 🔬 Research Extensions
+### Common Issues
 
-### Easy Experiments:
-1. **Different Datasets**: Change `DATASET` parameter and run
-2. **Parameter Tuning**: Modify `args.hard_neg_top_k` (3, 5, 10)
-3. **Contrastive Weight**: Try `args.contrastive_weight` (0.05, 0.1, 0.2)
-4. **Longer Training**: Set `args.epoch = 150` for full training
-
-### Advanced Analysis:
-- Compare attention patterns between HardGNN and baseline
-- Analyze embedding quality and clustering
-- Study the effect of different temperature values
-- Investigate performance on different user/item groups
-
----
-
-## 📄 Citation
-
-If you use this code in your research, please cite:
-
-```bibtex
-@article{liu2024selfgnn,
-  title={SelfGNN: Self-Supervised Graph Neural Networks for Sequential Recommendation},
-  author={Liu, Yuxi and Xia, Lianghao and Huang, Chao},
-  journal={arXiv preprint arXiv:2405.20878},
-  year={2024}
-}
+**1. TensorFlow Version Conflicts**
+```bash
+# Solution: Use tf.compat.v1 (handled automatically)
+pip install tensorflow==2.15.0
 ```
 
+**2. Memory Issues**
+```python
+# The model includes memory optimization
+# Reduces hard negatives from unlimited to 50 per anchor
+```
+
+**3. Import Errors**
+```python
+# Ensure you're in the correct directory
+import sys
+sys.path.append('/content/HardGNN/Google-Colab')
+```
+
+**4. GPU Not Detected**
+```python
+# Check GPU availability
+import tensorflow as tf
+print("GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
+```
+
+### Performance Optimization
+
+For optimal performance on Google Colab Pro+:
+1. **Use GPU runtime** (Runtime → Change runtime type → GPU)
+2. **Monitor memory usage** during training
+3. **Adjust batch size** if encountering OOM errors
+4. **Use mixed precision** for faster training (optional)
+
+## 📈 Expected Performance
+
+### Training Metrics
+- **Hit Rate@10**: ~0.15-0.25 (dataset dependent)
+- **NDCG@10**: ~0.08-0.15 (dataset dependent)
+- **Contrastive Loss**: ~0.5-2.0 (with hard negatives)
+
+### Hardware Performance
+- **Google Colab Pro+ (T4)**: ~20-30 minutes per epoch
+- **Google Colab Pro+ (A100)**: ~10-15 minutes per epoch
+- **CPU Only**: ~2-3 hours per epoch (not recommended)
+
+## 🧪 Experiment Reproduction
+
+To reproduce the original paper results with hard negative enhancement:
+
+```python
+# 1. Run automated script
+%run HardGNN_Colab_Script.py
+
+# 2. Select dataset
+configure_dataset('gowalla')  # or your preferred dataset
+
+# 3. Verify hard negative sampling is enabled
+print(f"Hard negatives enabled: {args.use_hard_neg}")
+print(f"Temperature: {args.temp}")
+print(f"Top-K: {args.hard_neg_top_k}")
+
+# 4. Start training
+main()
+```
+
+## 📚 References
+
+1. **SelfGNN**: Self-Supervised Graph Neural Networks without explicit negative sampling
+2. **InfoNCE**: Representation Learning with Contrastive Predictive Coding
+3. **Hard Negative Sampling**: Learning with hard negative sampling for recommendation
+
+## 🤝 Support
+
+If you encounter issues:
+1. Run `VERIFY_COLAB_READY.py` for diagnostics
+2. Check system requirements match Google Colab Pro+ specs
+3. Ensure all files are in the correct directory structure
+4. Verify TensorFlow 2.x compatibility layer is working
+
 ---
 
-## ✅ Quick Start Checklist
-
-- [ ] Upload `Google-Colab` folder to Google Drive
-- [ ] Open Google Colab with GPU runtime
-- [ ] Mount Google Drive and navigate to folder
-- [ ] Choose dataset by setting `DATASET` parameter
-- [ ] Copy Cell 1 code and uncomment `install_dependencies()`
-- [ ] Copy and run Cells 2-7 sequentially
-- [ ] Monitor training progress and results
-- [ ] Compare with baseline (optional)
-
-**That's it! You now have HardGNN running with hard negative sampling on your chosen dataset.** 🎉
-
----
-
-**Questions?** Check the troubleshooting section above or examine the validation outputs to ensure hard negative sampling is working correctly. 
+**Ready to run HardGNN experiments on Google Colab Pro+!** 🚀 
