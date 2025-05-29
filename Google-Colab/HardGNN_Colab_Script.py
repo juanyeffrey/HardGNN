@@ -416,6 +416,10 @@ tf.compat.v1.set_random_seed(42)
 config = tf.compat.v1.ConfigProto()
 config.gpu_options.allow_growth = True
 config.allow_soft_placement = True
+# Enable XLA (Accelerated Linear Algebra) JIT compilation for performance on GPUs
+if tf.config.list_physical_devices('GPU'): # Only apply if GPU is available
+    config.graph_options.optimizer_options.global_jit_level = tf.compat.v1.OptimizerOptions.ON_1
+    print("ℹ️ XLA JIT compilation (global_jit_level=ON_1) enabled for TensorFlow session.")
 
 with tf.compat.v1.Session(config=config) as sess:
     # Initialize HardGNN model
@@ -519,6 +523,15 @@ print(f"[DEBUG CELL 5] NNLayers_tf2.params before reset: {list(NNLayers_tf2.para
 NNLayers_tf2.reset_nn_params() # Call the reset function via the module
 print(f"[DEBUG CELL 5] NNLayers_tf2.params after reset: {list(NNLayers_tf2.params.keys()) if NNLayers_tf2.params else 'Empty or None'}")
 
+# Prepare config for main training session
+config = tf.compat.v1.ConfigProto()
+config.gpu_options.allow_growth = True
+config.allow_soft_placement = True
+# Enable XLA (Accelerated Linear Algebra) JIT compilation for performance on GPUs
+if tf.config.list_physical_devices('GPU'): # Only apply if GPU is available
+    config.graph_options.optimizer_options.global_jit_level = tf.compat.v1.OptimizerOptions.ON_1
+    print("ℹ️ XLA JIT compilation (global_jit_level=ON_1) enabled for TensorFlow session.")
+
 with tf.compat.v1.Session(config=config) as sess:
     # Initialize model
     model = Recommender(sess, handler)
@@ -599,6 +612,15 @@ print(f"📊 Baseline Configuration: Hard Negative Sampling = {args.use_hard_neg
 
 # Reset graph and train baseline
 tf.compat.v1.reset_default_graph()
+
+# Prepare config for baseline training session
+config = tf.compat.v1.ConfigProto()
+config.gpu_options.allow_growth = True
+config.allow_soft_placement = True
+# Enable XLA (Accelerated Linear Algebra) JIT compilation for performance on GPUs
+if tf.config.list_physical_devices('GPU'): # Only apply if GPU is available
+    config.graph_options.optimizer_options.global_jit_level = tf.compat.v1.OptimizerOptions.ON_1
+    print("ℹ️ XLA JIT compilation (global_jit_level=ON_1) enabled for TensorFlow session.")
 
 with tf.compat.v1.Session(config=config) as sess:
     # Initialize baseline model
