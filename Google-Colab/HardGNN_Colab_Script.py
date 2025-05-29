@@ -8,146 +8,218 @@
 # Configuration: Uses validated parameters + Hard Negative Sampling (τ=0.1, K=5, λ=0.1)
 # ========================================================================
 
-# ========================================================================
-# CELL 1: Environment Setup and Installation
-# ========================================================================
-
-"""
-🚀 HardGNN: Hard Negative Sampling Enhanced SelfGNN
-
-This notebook adds hard negative sampling to validated SelfGNN configurations:
-- Uses proven hyperparameters for each dataset
-- Adds InfoNCE contrastive loss (τ=0.1, K=5, λ=0.1)
-- Dataset-agnostic design
-- GPU acceleration on Google Colab
-
-## 📋 Setup Instructions:
-1. Runtime → Change runtime type → GPU (T4, A100, or V100)
-2. Set DATASET parameter below to your desired dataset
-3. Run cells in order - dependencies will be installed automatically
-4. Monitor training - logs show contrastive loss alongside standard metrics
-"""
+# ========================================================================\n# 🔧 CONFIGURE YOUR EXPERIMENT HERE\n# ========================================================================\nDATASET = 'gowalla'  # Options: 'yelp', 'amazon', 'gowalla', 'movielens'\n# ========================================================================
 
 # ========================================================================
-# 🔧 CONFIGURE YOUR EXPERIMENT HERE
+# CELL 1: Environment Setup - PRIORITIZING COLAB DEFAULTS for TF/NumPy
 # ========================================================================
-DATASET = 'gowalla'  # Options: 'yelp', 'amazon', 'gowalla', 'movielens'
-# ========================================================================
+import subprocess
+import sys
+import os
+import site
 
-# ========================================================================
-# CELL 1: Environment Setup and Installation
-# ========================================================================
-
-def install_dependencies():
-    """Install required dependencies for HardGNN on Google Colab Pro+"""
-    import subprocess
-    import sys
-    
-    print("🔄 Installing HardGNN dependencies for Google Colab Pro+...")
+def install_missing_dependencies():
+    """Install/upgrade non-ML core dependencies. NumPy and TensorFlow should be Colab's defaults."""
+    print("🔄 Installing/upgrading non-ML core dependencies for HardGNN...")
     print(f"📍 Detected Python version: {sys.version}")
-    
-    # Install core dependencies
+
+    # We will NOT install numpy, tensorflow, or ml-dtypes via pip.
+    # We rely on Colab's pre-installed versions.
     dependencies = [
         "matplotlib>=3.5.0",
-        "numpy>=1.21.0,<1.25.0", 
-        "scipy>=1.7.0,<1.12.0",
-        "tensorflow>=2.10.0,<2.17.0",
-        "protobuf>=3.19.0,<4.25.0",
+        "scipy>=1.12.0",
+        "protobuf>=3.19.0,<4.25.0", 
         "pandas>=1.3.0",
         "scikit-learn>=1.0.0"
     ]
-    
-    for dep in dependencies:
-        print(f"📦 Installing {dep}...")
-        try:
-            subprocess.run([sys.executable, "-m", "pip", "install", dep], 
-                         check=True, capture_output=True, text=True)
-            print(f"✅ Successfully installed {dep}")
-        except subprocess.CalledProcessError as e:
-            print(f"⚠️ Warning: Could not install {dep}: {e}")
-    
-    print("✅ All dependencies installed!")
 
-def setup_tensorflow_compatibility():
-    """Setup TensorFlow 2.x with v1 compatibility for Google Colab"""
-    import tensorflow as tf
-    
-    print(f"🔧 Setting up TensorFlow compatibility...")
-    print(f"📍 TensorFlow version: {tf.__version__}")
-    
-    # Enable TensorFlow 1.x behavior in TensorFlow 2.x
+    print("🔄 Attempting to install/upgrade non-ML core dependencies to user site...")
+    for dep in dependencies:
+        print(f"📦 Processing {dep}...")
+        try:
+            # Using --upgrade will install if not present, or upgrade if it is.
+            # --user to keep it in user space.
+            command = [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--upgrade", "--user", dep]
+            print(f"   Executing: {' '.join(command)}")
+            result = subprocess.run(command,
+                                  check=True, capture_output=True, text=True, timeout=180)
+            print(f"✅ Successfully processed {dep}.")
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️ Warning: Could not process {dep}. Pip stdout: {e.stdout.strip()}. Pip stderr: {e.stderr.strip()}")
+        except subprocess.TimeoutExpired as e:
+            print(f"⚠️ Timeout: Processing of {dep} took too long. Pip stdout: {e.stdout.strip()}. Pip stderr: {e.stderr.strip()}")
+        except Exception as e:
+            print(f"⚠️ An unexpected error occurred processing {dep}: {e}")
+
+    print("✅ Non-ML core dependency processing complete.")
     try:
-        tf.compat.v1.disable_eager_execution()
-        tf.compat.v1.disable_v2_behavior()
-        print("✅ TensorFlow 2.x configured for v1 compatibility mode")
-        
-        # Test GPU availability
-        gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            print(f"🚀 GPU acceleration available: {len(gpus)} GPU(s) detected")
-            for gpu in gpus:
-                print(f"   - {gpu}")
-            # Configure GPU memory growth
-            for gpu in gpus:
-                try:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                    print(f"✅ GPU memory growth configured for {gpu}")
-                except RuntimeError as e:
-                    print(f"⚠️ Could not configure GPU memory growth: {e}")
-        else:
-            print("⚠️ No GPU detected, will use CPU")
-            
-        return True
+        # Ensure user site packages are in path
+        if hasattr(site, 'USER_SITE') and site.USER_SITE and site.USER_SITE not in sys.path:
+            print(f"Adding {site.USER_SITE} to sys.path (priority 0)")
+            sys.path.insert(0, site.USER_SITE)
+        # For Colab/Linux, also consider adding local/bin to PATH if it exists for any pip installed CLIs
+        local_bin_path = os.path.expanduser("~/.local/bin")
+        if os.path.isdir(local_bin_path) and local_bin_path not in os.environ['PATH']:
+            print(f"Adding {local_bin_path} to PATH")
+            os.environ['PATH'] = local_bin_path + os.pathsep + os.environ['PATH']
     except Exception as e:
-        print(f"❌ Error setting up TensorFlow: {e}")
+        print(f"⚠️ Could not robustly update sys.path/PATH for user site: {e}")
+
+def setup_tensorflow_compatibility(tf_module, numpy_module):
+    print(f"🔧 Setting up TensorFlow compatibility...")
+    print(f"📍 Using TensorFlow version: {tf_module.__version__ if tf_module else 'N/A'}")
+    print(f"📍 Using NumPy version: {numpy_module.__version__ if numpy_module else 'N/A'}")
+
+    if not tf_module or not numpy_module:
+        print("❌ CRITICAL: TensorFlow or NumPy module not available. Cannot proceed with setup.")
         return False
 
-def verify_colab_environment():
-    """Verify Google Colab Pro+ environment"""
+    # Informational checks about loaded versions
+    if numpy_module.__version__.startswith("2."):
+        print(f"ℹ️ NumPy version is {numpy_module.__version__}. Colab's TensorFlow ({tf_module.__version__}) should be compatible (e.g., >=2.16 or specially built)." )
+    elif numpy_module.__version__.startswith("1."):
+        print(f"ℹ️ NumPy version is {numpy_module.__version__}. Colab's TensorFlow ({tf_module.__version__}) should be compatible (e.g., <=2.15 or specially built)." )
+    else:
+        print(f"⚠️ Unknown NumPy version pattern: {numpy_module.__version__}")
+
+    try:
+        import ml_dtypes
+        print(f"📍 ml_dtypes version found: {ml_dtypes.__version__} (from {ml_dtypes.__file__})")
+        if numpy_module.__version__.startswith("2.") and not ml_dtypes.__version__.startswith(("0.4", "0.5")):
+            print(f"   ⚠️ WARNING: ml_dtypes version ({ml_dtypes.__version__}) might not be ideal for NumPy 2.x (expected 0.4.x or 0.5.x). Check for runtime issues.")
+        elif numpy_module.__version__.startswith("1.") and ml_dtypes.__version__.startswith(("0.4", "0.5")):
+             print(f"   ⚠️ WARNING: ml_dtypes version ({ml_dtypes.__version__}) might not be ideal for NumPy 1.x (expected <0.4.x). Check for runtime issues.")
+    except ImportError:
+        print("ℹ️ ml_dtypes not explicitly found or importable by script. TensorFlow might bundle it or manage it internally.")
+    except Exception as e:
+        print(f"⚠️ Error during ml_dtypes check: {e}")
+
+    try:
+        tf_module.compat.v1.disable_eager_execution()
+        tf_module.compat.v1.disable_v2_behavior()
+        print("✅ TensorFlow (Colab's default) configured for v1 compatibility mode.")
+
+        gpus = tf_module.config.list_physical_devices('GPU')
+        if gpus:
+            print(f"🚀 GPU acceleration available: {len(gpus)} GPU(s) detected")
+            for gpu_device in gpus:
+                print(f"   - {gpu_device}")
+                try:
+                    tf_module.config.experimental.set_memory_growth(gpu_device, True)
+                    print(f"✅ GPU memory growth configured for {gpu_device}")
+                except RuntimeError as e:
+                    print(f"⚠️ Could not configure GPU memory growth for {gpu_device}: {e}")
+        else:
+            print("⚠️ No GPU detected, will use CPU.")
+        return True
+    except AttributeError as e:
+        print(f"❌ AttributeError during TensorFlow v1 compatibility setup: {e}")
+        print(f"   This can happen if Colab's TensorFlow version ({tf_module.__version__}) is too old, or has an unexpected structure, or is incompatible with its NumPy ({numpy_module.__version__}).")
+        return False
+    except Exception as e:
+        print(f"❌ Error setting up TensorFlow v1 compatibility layer: {e}")
+        return False
+
+def verify_colab_environment(tf_module, numpy_module):
     import sys
     import psutil
     import platform
-    
-    print("🔍 Verifying Google Colab Pro+ Environment...")
+
+    print("🔍 Verifying Google Colab Environment (using Colab defaults for TF/NumPy)...")
     print(f"📍 Python: {sys.version}")
+    print(f"📍 sys.path (first few entries): {str(sys.path[:5])}")
     print(f"📍 Platform: {platform.platform()}")
     print(f"📍 Architecture: {platform.machine()}")
-    
-    # Check available memory
+
+    if numpy_module:
+        print(f"📍 NumPy Version (loaded): {numpy_module.__version__}")
+        print(f"📍 NumPy Path: {numpy_module.__file__}")
+    else:
+        print("📍 NumPy Version (loaded): NOT LOADED")
+
+    if tf_module:
+        print(f"📍 TensorFlow Version (loaded): {tf_module.__version__}")
+        print(f"📍 TensorFlow Path: {tf_module.__file__}")
+    else:
+        print("📍 TensorFlow Version (loaded): NOT LOADED")
+
+    try:
+        import ml_dtypes
+        print(f"📍 ml_dtypes Version (loaded): {ml_dtypes.__version__} from {ml_dtypes.__file__}")
+    except Exception:
+        print(f"📍 ml_dtypes: Not found by script or error during import check (may be internal to TF).")
+
+    try:
+        import tensorflow_metadata # Check if it's part of Colab's default TF environment
+        print(f"📍 tensorflow-metadata Version (loaded): {tensorflow_metadata.__version__} from {tensorflow_metadata.__file__}")
+    except Exception:
+        print(f"📍 tensorflow-metadata: Not found by script or error (may not be needed or part of default TF).")
+
     memory = psutil.virtual_memory()
     memory_gb = memory.total / (1024**3)
     print(f"📍 Available RAM: {memory_gb:.1f} GB")
-    
-    if memory_gb >= 12:  # Colab Pro+ typically has 25+ GB
-        print("✅ Sufficient memory for HardGNN training")
-    else:
-        print("⚠️ Limited memory detected, consider upgrading to Colab Pro+")
-    
-    # Check disk space
     disk = psutil.disk_usage('/')
     disk_gb = disk.free / (1024**3)
     print(f"📍 Available disk space: {disk_gb:.1f} GB")
-    
-    if disk_gb >= 20:
-        print("✅ Sufficient disk space for datasets and model")
-    else:
-        print("⚠️ Limited disk space, may need to clean up files")
-    
     return True
 
-# Run setup
+# --- Main Execution Flow ---
 print("=" * 60)
-print("🚀 HardGNN Setup for Google Colab Pro+")
+print("🚀 HardGNN Setup for Google Colab Pro+ (PRIORITIZING COLAB DEFAULTS for TF/NumPy)")
 print("=" * 60)
 
-install_dependencies()
-setup_successful = setup_tensorflow_compatibility()
-verify_colab_environment()
+# 1. Install/Upgrade other dependencies (non TF/NumPy)
+install_missing_dependencies()
+
+# 2. Import Colab's default NumPy and TensorFlow
+# These imports will now occur *after* pip has potentially modified the environment
+# by installing other packages and their dependencies, and after sys.path modifications.
+print("🔄 Importing Colab's default NumPy (post any other pip installs)...")
+numpy_to_use = None
+tensorflow_to_use = None
+
+try:
+    import numpy
+    numpy_to_use = numpy
+    print(f"✅ NumPy version loaded: {numpy_to_use.__version__} from {numpy_to_use.__file__}")
+except Exception as e:
+    print(f"❌ FAILED to import Colab's default NumPy: {e}")
+    print("   This is a critical failure. Further steps will likely fail.")
+
+print("🔄 Importing Colab's default TensorFlow (post any other pip installs)...")
+try:
+    import tensorflow
+    tensorflow_to_use = tensorflow
+    print(f"✅ TensorFlow version loaded: {tensorflow_to_use.__version__} from {tensorflow_to_use.__file__}")
+except Exception as e:
+    print(f"❌ FAILED to import Colab's default TensorFlow: {e}")
+    print(f"   This could be due to an underlying issue with its dependencies (like the loaded NumPy version) or Colab environment configuration.")
+
+# Check if imports were successful before proceeding
+if not numpy_to_use or not tensorflow_to_use:
+    # Allow script to continue to verify_colab_environment to see more details if one failed
+    print("⚠️ CRITICAL FAILURE: Could not import Colab's default NumPy or TensorFlow. Environment setup will likely be incomplete or fail.")
+    # We will let it proceed to verify_colab_environment and then the final check for setup_successful
+    # rather than raising an immediate RuntimeError here, to get more diagnostic output.
+
+# 3. Setup TensorFlow compatibility using the imported Colab modules
+setup_successful = False # Default to False
+if numpy_to_use and tensorflow_to_use:
+    setup_successful = setup_tensorflow_compatibility(tf_module=tensorflow_to_use, numpy_module=numpy_to_use)
+else:
+    print("Skipping TensorFlow compatibility setup as core modules (NumPy/TensorFlow) failed to load.")
+
+# 4. Verify environment using the imported Colab modules
+verify_colab_environment(tf_module=tensorflow_to_use, numpy_module=numpy_to_use)
 
 if not setup_successful:
-    raise RuntimeError("❌ TensorFlow setup failed. Please check your environment.")
+    # Custom error message based on whether TF/NumPy even loaded
+    if not numpy_to_use or not tensorflow_to_use:
+        raise RuntimeError("❌ TensorFlow/NumPy native import failed. Cannot configure environment.")
+    else:
+        raise RuntimeError("❌ TensorFlow setup failed using Colab's default versions. There might be an incompatibility within the pre-built Colab environment, or the TF1 compatibility layer cannot be applied to the loaded versions.")
 
-print("✅ Environment setup complete!")
+print("✅ Environment setup attempt complete using Colab's default TF/NumPy (or best effort)!")
 print("=" * 60)
 
 # ========================================================================

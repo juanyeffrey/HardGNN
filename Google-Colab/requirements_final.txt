@@ -1,13 +1,14 @@
 # Final Requirements for Google Colab Pro+ Compatibility
 # These versions are tested and confirmed to work with Python 3.10+ on Google Colab
+# For TensorFlow and NumPy, we rely on Colab's default versions. Script installs/upgrades others.
 
 # Core scientific computing libraries
 matplotlib>=3.5.0
-numpy>=1.21.0,<1.25.0  # Upper bound for TF compatibility
-scipy>=1.7.0,<1.12.0
+# numpy: Relies on Google Colab's default version.
+scipy>=1.12.0  # NumPy 2.x compatible
 
-# TensorFlow 2.x with v1 compatibility mode
-tensorflow>=2.10.0,<2.17.0  # Stable versions with good tf.compat.v1 support
+# TensorFlow: Relies on Google Colab's default version.
+# ml-dtypes: Relies on Google Colab's default version (often a TF dependency).
 
 # Protobuf compatibility (important for TensorFlow)
 protobuf>=3.19.0,<4.25.0  # Avoid version conflicts
