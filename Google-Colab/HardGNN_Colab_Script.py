@@ -299,30 +299,29 @@ else:
     import tensorflow as tf
     print("⚠️ Warning: tensorflow_to_use was not set from Cell 1. Attempted direct import of tensorflow as tf.")
 
-# Core imports
+# Core Python Standard Library imports
 import os
-import numpy as np
 import random
 import pickle
-import scipy.sparse as sp
-import matplotlib.pyplot as plt
-from ast import arg
-from random import randint
-import time
-from datetime import datetime
 import json
-import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from functools import partial
-import multiprocessing as mp
-from threading import Lock
+from datetime import datetime
+import time # Retained for now, as it might be used for quick perf measures not covered by datetime objects
+import gc
+import traceback
 import queue
 import threading
+import multiprocessing as mp
+
+# Third-party library imports
+import numpy as np
+import scipy.sparse as sp
+import matplotlib.pyplot as plt
+import pandas as pd
 
 # Import our modules
 from Params import args
-import Utils.TimeLogger as logger
-from Utils.TimeLogger import log
+import Utils.TimeLogger as logger # Utils.TimeLogger.log is used, so keep logger
+from Utils.TimeLogger import log # Direct import of log is also used
 from DataHandler import DataHandler
 
 # Import the HardGNN model
@@ -426,6 +425,9 @@ def configure_dataset(dataset_name, hard_neg_k=5, contrastive_weight=0.1):
     # Set contrastive weight (λ=0 is handled in model during loss computation)
     args.contrastive_weight = contrastive_weight
     # Note: τ (temperature) is already set in args.temp = 0.1
+
+    # Enable AMP to be handled within the model
+    args.enable_amp = True # This will be read by HardGNN_model.py
 
     args.tstEpoch = 3  # Test every 3 epochs (can be adjusted if needed for full runs)
 
@@ -651,7 +653,24 @@ def save_grid_search_summary_to_drive(all_results, dataset_name):
 def run_single_experiment(k_value, lambda_value, epochs, experiment_num=None, total_experiments=None):
     """Run a single experiment with given hyperparameters - GPU optimized"""
     
-    # Configure for this experiment
+    # Reset TensorFlow graph for fresh start - THIS MUST BE FIRST
+    tf.compat.v1.reset_default_graph()
+    
+    # Also reset NNLayers_tf2 global parameter tracking
+    from Utils import NNLayers_tf2 # Ensure this import is okay here or move to top if causes issues
+    NNLayers_tf2.reset_nn_params()
+
+    # Enable Automatic Mixed Precision (AMP) - MOVED TO HardGNN_model.py
+    # amp_enabled_successfully = False # This is now determined and logged by the model
+    # if tf.config.list_physical_devices('GPU'):
+    #     try:
+    #         # tf.compat.v1.train.experimental.enable_mixed_precision_graph_rewrite() # Removed global call
+    #         print("✅ Automatic Mixed Precision (AMP) will be attempted by the model.")
+    #         # amp_enabled_successfully = True # Status will be logged by model
+    #     except Exception as e:
+    #         print(f"⚠️ Could not prepare for Automatic Mixed Precision (AMP) globally: {e}.")
+    
+    # Configure for this experiment (this will set args.enable_amp = True)
     configure_dataset(DATASET, k_value, lambda_value)
     args.epoch = epochs
     
@@ -681,37 +700,19 @@ def run_single_experiment(k_value, lambda_value, epochs, experiment_num=None, to
     print(f"   Hard Negative Sampling: {'Disabled' if k_value == 0 else 'Enabled'}")
     print(f"   Contrastive Loss: {'Disabled (λ=0)' if lambda_value == 0 else f'Enabled (λ={lambda_value})'}")
     
-    # Reset TensorFlow graph for fresh start
-    tf.compat.v1.reset_default_graph()
-    
-    # Also reset NNLayers_tf2 global parameter tracking
-    from Utils import NNLayers_tf2
-    NNLayers_tf2.reset_nn_params()
-    
     # GPU-optimized TensorFlow session configuration
     config = tf.compat.v1.ConfigProto()
     config.gpu_options.allow_growth = True
     config.allow_soft_placement = True
     config.gpu_options.per_process_gpu_memory_fraction = 0.95  # Use most of GPU memory
     
-    # Enable XLA JIT compilation and mixed precision for maximum GPU efficiency
     if tf.config.list_physical_devices('GPU'):
-        # Enable Automatic Mixed Precision (AMP)
-        # This uses float16 for eligible operations to boost performance on Tensor Cores
-        try:
-            # For TF1 compatibility mode, this graph rewrite is appropriate
-            # Note: Ensure your TF version (even in compat mode) supports this well.
-            # For pure TF2, tf.keras.mixed_precision.set_global_policy('mixed_float16') would be used.
-            tf.compat.v1.train.experimental.enable_mixed_precision_graph_rewrite(
-                tf.compat.v1.train.experimental.DynamicLossScale() # Use dynamic loss scaling for stability
-            )
-            print("✅ Automatic Mixed Precision (AMP) enabled with dynamic loss scaling.")
-        except Exception as e:
-            print(f"⚠️ Could not enable Automatic Mixed Precision (AMP): {e}. Proceeding without AMP.")
-
         config.graph_options.optimizer_options.global_jit_level = tf.compat.v1.OptimizerOptions.ON_1
-        config.gpu_options.experimental.enable_async_io = True  # Async GPU I/O
-        print(f"🚀 GPU optimization enabled: XLA JIT + Async I/O + 95% memory allocation (AMP status above)")
+        # config.gpu_options.experimental.enable_async_io = True # Ensure this is commented out or removed
+        log_message_parts = ["🚀 GPU optimization enabled: XLA JIT", "95% memory allocation"]
+        # AMP status is now logged by the model, but we can mention it's attempted.
+        log_message_parts.append("AMP attempted in model")
+        print(f"{', '.join(log_message_parts)}. Async I/O removed.")
     
     # Enable intra-op and inter-op parallelism for CPU efficiency
     config.intra_op_parallelism_threads = mp.cpu_count()
@@ -720,193 +721,217 @@ def run_single_experiment(k_value, lambda_value, epochs, experiment_num=None, to
     
     experiment_start_time = datetime.now()
     
-    with tf.compat.v1.Session(config=config) as sess:
-        # Initialize model
-        model = Recommender(sess, handler)
-        model.prepareModel()
-        
-        # Initialize variables
-        init = tf.compat.v1.global_variables_initializer()
-        sess.run(init)
-        
-        # Training tracking
-        best_hr = 0.0
-        best_ndcg = 0.0
-        best_epoch = 0
-        best_results = {}
-        final_hr = 0.0
-        final_ndcg = 0.0
-        final_epoch = epochs
-        final_results = {}
-        epoch_results = []
-        
-        # Pipeline optimization: Pre-compute user batches for parallel processing
-        print(f"🔄 Optimizing data pipeline for parallel processing...")
-        num_users = args.user
-        batch_size = args.batch
-        user_batches = []
-        
-        # Pre-generate all user ID permutations for faster training
-        for ep in range(epochs):
-            sfIds = np.random.permutation(num_users)[:args.trnNum]
-            epoch_batches = []
-            steps = int(np.ceil(len(sfIds) / batch_size))
-            for i in range(steps):
-                st = i * batch_size
-                ed = min((i+1) * batch_size, len(sfIds))
-                epoch_batches.append(sfIds[st:ed])
-            user_batches.append(epoch_batches)
-        
-        print(f"✅ Data pipeline optimized: {len(user_batches)} epochs, avg {len(user_batches[0])} batches/epoch")
-        
-        # Training loop with pipeline optimization
-        for ep in range(epochs):
-            test = (ep % args.tstEpoch == 0)
+    sess = None # Initialize sess to None for the finally block
+    try:
+        with tf.compat.v1.Session(config=config) as sess:
+            # Initialize model
+            model = Recommender(sess, handler)
+            model.prepareModel()
             
-            if ep % 5 == 0 or test:
-                print(f"📚 Epoch {ep+1}/{epochs} (K={k_value}, λ={lambda_value}) - GPU Pipeline Active")
+            # Initialize variables
+            init = tf.compat.v1.global_variables_initializer()
+            sess.run(init)
             
-            # GPU-optimized training with pre-computed batches
-            train_results = train_epoch_optimized(model, user_batches[ep], sess)
+            # Training tracking
+            best_hr = 0.0
+            best_ndcg = 0.0
+            best_epoch = 0
+            best_results = {}
+            final_hr = 0.0
+            final_ndcg = 0.0
+            final_epoch = epochs
+            final_results = {}
+            epoch_results = []
             
-            # Test if it's a test epoch
-            if test:
-                test_results = model.testEpoch()
-                hr = test_results['HR']
-                ndcg = test_results['NDCG']
+            # Pipeline optimization: Pre-compute user batches for parallel processing
+            print(f"🔄 Optimizing data pipeline for parallel processing...")
+            num_users = args.user
+            batch_size = args.batch
+            user_batches = []
+            
+            # Pre-generate all user ID permutations for faster training
+            for ep in range(epochs):
+                sfIds = np.random.permutation(num_users)[:args.trnNum]
+                epoch_batches = []
+                steps = int(np.ceil(len(sfIds) / batch_size))
+                for i in range(steps):
+                    st = i * batch_size
+                    ed = min((i+1) * batch_size, len(sfIds))
+                    epoch_batches.append(sfIds[st:ed])
+                user_batches.append(epoch_batches)
+            
+            print(f"✅ Data pipeline optimized: {len(user_batches)} epochs, avg {len(user_batches[0])} batches/epoch")
+            
+            # Training loop with pipeline optimization
+            for ep in range(epochs):
+                test = (ep % args.tstEpoch == 0)
                 
-                # Track best results
-                if ndcg > best_ndcg:
-                    best_ndcg = ndcg
-                    best_hr = hr
-                    best_epoch = ep + 1  # Convert to 1-indexed
-                    best_results = test_results.copy()
-                    print(f"🌟 New best: HR={hr:.4f}, NDCG={ndcg:.4f} (Epoch {ep+1})")
+                if ep % 5 == 0 or test:
+                    print(f"📚 Epoch {ep+1}/{epochs} (K={k_value}, λ={lambda_value}) - GPU Pipeline Active")
                 
-                # Store epoch results
-                epoch_results.append({
-                    'epoch': ep+1,
-                    'hr': hr,
-                    'ndcg': ndcg,
-                    'train_loss': train_results.get('Loss', 0),
-                    'pre_loss': train_results.get('preLoss', 0),
-                    'contrastive_loss': train_results.get('contrastiveLoss', 0)
-                })
-        
-        # Final evaluation
-        final_test_results = model.testEpoch()
-        final_hr = final_test_results['HR']
-        final_ndcg = final_test_results['NDCG']
-        final_results = final_test_results.copy()
-        experiment_duration = (datetime.now() - experiment_start_time).total_seconds()
-        
-        # ========================================================================
-        # COMPREHENSIVE RESULTS PRINTING AND LOGGING
-        # ========================================================================
-        print("\n" + "="*80)
-        print(f"�� EXPERIMENT RESULTS: {exp_id}")
-        print("="*80)
-        print(f"🔬 Experiment Type: {experiment_type}")
-        print(f"⚙️  Configuration:")
-        print(f"   • K (Hard negatives): {k_value}")
-        print(f"   • λ (Contrastive weight): {lambda_value}")
-        print(f"   • Epochs: {epochs}")
-        print(f"   • Duration: {experiment_duration/60:.1f} minutes")
-        print(f"   • GPU Efficiency: {epochs*len(user_batches[0])/(experiment_duration/60):.1f} batches/min")
-        print()
-        
-        print(f"🏆 BEST PERFORMANCE:")
-        print(f"   • Best HR: {best_hr:.4f}")
-        print(f"   • Best NDCG: {best_ndcg:.4f}")
-        print(f"   • Best Epoch: {best_epoch}")
-        if 'HR5' in best_results:
-            print(f"   • Best HR@5: {best_results['HR5']:.4f}")
-            print(f"   • Best NDCG@5: {best_results['NDCG5']:.4f}")
-        if 'HR20' in best_results:
-            print(f"   • Best HR@20: {best_results['HR20']:.4f}")
-            print(f"   • Best NDCG@20: {best_results['NDCG20']:.4f}")
-        print()
-        
-        print(f"🎯 FINAL PERFORMANCE (Epoch {final_epoch}):")
-        print(f"   • Final HR: {final_hr:.4f}")
-        print(f"   • Final NDCG: {final_ndcg:.4f}")
-        if 'HR5' in final_results:
-            print(f"   • Final HR@5: {final_results['HR5']:.4f}")
-            print(f"   • Final NDCG@5: {final_results['NDCG5']:.4f}")
-        if 'HR20' in final_results:
-            print(f"   • Final HR@20: {final_results['HR20']:.4f}")
-            print(f"   • Final NDCG@20: {final_results['NDCG20']:.4f}")
-        print()
-        
-        # Performance comparison
-        hr_improvement = ((final_hr - best_hr) / best_hr * 100) if best_hr > 0 else 0
-        ndcg_improvement = ((final_ndcg - best_ndcg) / best_ndcg * 100) if best_ndcg > 0 else 0
-        print(f"📈 PERFORMANCE ANALYSIS:")
-        print(f"   • HR improvement (final vs best): {hr_improvement:+.2f}%")
-        print(f"   • NDCG improvement (final vs best): {ndcg_improvement:+.2f}%")
-        
-        if best_epoch < final_epoch:
-            print(f"   • Best performance at epoch {best_epoch}, final at epoch {final_epoch}")
-            print(f"   • Potential overfitting detected ({final_epoch - best_epoch} epochs after best)")
-        else:
-            print(f"   • Best performance maintained until final epoch")
-        
-        print("="*80)
-        
-        # Comprehensive experiment result for logging
-        experiment_result = {
-            'dataset': DATASET,
-            'experiment_type': experiment_type,
-            'k_value': k_value,
-            'lambda_value': lambda_value,
-            'epochs': epochs,
-            'duration_minutes': experiment_duration/60,
-            'gpu_efficiency_batches_per_min': epochs*len(user_batches[0])/(experiment_duration/60),
+                # GPU-optimized training with pre-computed batches
+                train_results = train_epoch_optimized(model, user_batches[ep], sess)
+                
+                # Test if it's a test epoch
+                if test:
+                    test_results = model.testEpoch()
+                    hr = test_results['HR']
+                    ndcg = test_results['NDCG']
+                    
+                    # Track best results
+                    if ndcg > best_ndcg:
+                        best_ndcg = ndcg
+                        best_hr = hr
+                        best_epoch = ep + 1  # Convert to 1-indexed
+                        best_results = test_results.copy()
+                        print(f"🌟 New best: HR={hr:.4f}, NDCG={ndcg:.4f} (Epoch {ep+1})")
+                    
+                    # Store epoch results
+                    epoch_results.append({
+                        'epoch': ep+1,
+                        'hr': hr,
+                        'ndcg': ndcg,
+                        'train_loss': train_results.get('Loss', 0),
+                        'pre_loss': train_results.get('preLoss', 0),
+                        'contrastive_loss': train_results.get('contrastiveLoss', 0)
+                    })
             
-            # Best performance metrics
-            'best_hr': best_hr,
-            'best_ndcg': best_ndcg,
-            'best_epoch': best_epoch,
-            'best_hr5': best_results.get('HR5', None),
-            'best_ndcg5': best_results.get('NDCG5', None),
-            'best_hr20': best_results.get('HR20', None),
-            'best_ndcg20': best_results.get('NDCG20', None),
+            # Final evaluation
+            final_test_results = model.testEpoch()
+            final_hr = final_test_results['HR']
+            final_ndcg = final_test_results['NDCG']
+            final_results = final_test_results.copy()
+            experiment_duration = (datetime.now() - experiment_start_time).total_seconds()
             
-            # Final performance metrics  
-            'final_hr': final_hr,
-            'final_ndcg': final_ndcg,
-            'final_epoch': final_epoch,
-            'final_hr5': final_results.get('HR5', None),
-            'final_ndcg5': final_results.get('NDCG5', None),
-            'final_hr20': final_results.get('HR20', None),
-            'final_ndcg20': final_results.get('NDCG20', None),
+            # ========================================================================
+            # COMPREHENSIVE RESULTS PRINTING AND LOGGING
+            # ========================================================================
+            print("\n" + "="*80)
+            print(f"🎯 EXPERIMENT RESULTS: {exp_id}")
+            print("="*80)
+            print(f"🔬 Experiment Type: {experiment_type}")
+            print(f"⚙️  Configuration:")
+            print(f"   • K (Hard negatives): {k_value}")
+            print(f"   • λ (Contrastive weight): {lambda_value}")
+            print(f"   • Epochs: {epochs}")
+            print(f"   • Duration: {experiment_duration/60:.1f} minutes")
+            print(f"   • GPU Efficiency: {epochs*len(user_batches[0])/(experiment_duration/60):.1f} batches/min")
+            print()
             
-            # Performance analysis
-            'hr_improvement_percent': hr_improvement,
-            'ndcg_improvement_percent': ndcg_improvement,
-            'potential_overfitting': best_epoch < final_epoch,
-            'epochs_after_best': max(0, final_epoch - best_epoch),
+            print(f"🏆 BEST PERFORMANCE:")
+            print(f"   • Best HR: {best_hr:.4f}")
+            print(f"   • Best NDCG: {best_ndcg:.4f}")
+            print(f"   • Best Epoch: {best_epoch}")
+            if 'HR5' in best_results:
+                print(f"   • Best HR@5: {best_results['HR5']:.4f}")
+                print(f"   • Best NDCG@5: {best_results['NDCG5']:.4f}")
+            if 'HR20' in best_results:
+                print(f"   • Best HR@20: {best_results['HR20']:.4f}")
+                print(f"   • Best NDCG@20: {best_results['NDCG20']:.4f}")
+            print()
             
-            # Technical details
-            'hard_negatives_enabled': k_value > 0,
-            'contrastive_loss_enabled': lambda_value > 0,
-            'timestamp': experiment_start_time.isoformat(),
+            print(f"🎯 FINAL PERFORMANCE (Epoch {final_epoch}):")
+            print(f"   • Final HR: {final_hr:.4f}")
+            print(f"   • Final NDCG: {final_ndcg:.4f}")
+            if 'HR5' in final_results:
+                print(f"   • Final HR@5: {final_results['HR5']:.4f}")
+                print(f"   • Final NDCG@5: {final_results['NDCG5']:.4f}")
+            if 'HR20' in final_results:
+                print(f"   • Final HR@20: {final_results['HR20']:.4f}")
+                print(f"   • Final NDCG@20: {final_results['NDCG20']:.4f}")
+            print()
             
-            # Detailed epoch-by-epoch results
-            'epoch_details': epoch_results,
+            # Performance comparison
+            hr_improvement = ((final_hr - best_hr) / best_hr * 100) if best_hr > 0 else 0
+            ndcg_improvement = ((final_ndcg - best_ndcg) / best_ndcg * 100) if best_ndcg > 0 else 0
+            print(f"📈 PERFORMANCE ANALYSIS:")
+            print(f"   • HR improvement (final vs best): {hr_improvement:+.2f}%")
+            print(f"   • NDCG improvement (final vs best): {ndcg_improvement:+.2f}%")
             
-            # Full results objects for reference
-            'best_results_full': best_results,
-            'final_results_full': final_results
+            if best_epoch < final_epoch:
+                print(f"   • Best performance at epoch {best_epoch}, final at epoch {final_epoch}")
+                print(f"   • Potential overfitting detected ({final_epoch - best_epoch} epochs after best)")
+            else:
+                print(f"   • Best performance maintained until final epoch")
+            
+            print("="*80)
+            
+            # Comprehensive experiment result for logging
+            experiment_result = {
+                'dataset': DATASET,
+                'experiment_type': experiment_type,
+                'k_value': k_value,
+                'lambda_value': lambda_value,
+                'epochs': epochs,
+                'duration_minutes': experiment_duration/60,
+                'gpu_efficiency_batches_per_min': epochs*len(user_batches[0])/(experiment_duration/60) if experiment_duration > 0 else 0,
+                
+                # Best performance metrics
+                'best_hr': best_hr,
+                'best_ndcg': best_ndcg,
+                'best_epoch': best_epoch,
+                'best_hr5': best_results.get('HR5', None),
+                'best_ndcg5': best_results.get('NDCG5', None),
+                'best_hr20': best_results.get('HR20', None),
+                'best_ndcg20': best_results.get('NDCG20', None),
+                
+                # Final performance metrics  
+                'final_hr': final_hr,
+                'final_ndcg': final_ndcg,
+                'final_epoch': final_epoch,
+                'final_hr5': final_results.get('HR5', None),
+                'final_ndcg5': final_results.get('NDCG5', None),
+                'final_hr20': final_results.get('HR20', None),
+                'final_ndcg20': final_results.get('NDCG20', None),
+                
+                # Performance analysis
+                'hr_improvement_percent': hr_improvement,
+                'ndcg_improvement_percent': ndcg_improvement,
+                'potential_overfitting': best_epoch < final_epoch,
+                'epochs_after_best': max(0, final_epoch - best_epoch),
+                
+                # Technical details
+                'hard_negatives_enabled': k_value > 0,
+                'contrastive_loss_enabled': lambda_value > 0,
+                'timestamp': experiment_start_time.isoformat(),
+                
+                # Detailed epoch-by-epoch results
+                'epoch_details': epoch_results,
+                
+                # Full results objects for reference
+                'best_results_full': best_results,
+                'final_results_full': final_results
+            }
+            
+            print(f"✅ Experiment completed successfully!")
+            print(f"💾 Saving detailed results to Google Drive...")
+            
+            # Save individual result to Google Drive
+            save_experiment_result_to_drive(experiment_result, DATASET, experiment_num)
+            
+            return experiment_result
+
+    except Exception as e:
+        print(f"❌ Experiment {exp_id} failed: {e}")
+        error_trace = traceback.format_exc()
+        print(f"Traceback:\\n{error_trace}")
+        # Log partial or error state if necessary
+        return {
+            "experiment_id": exp_id,
+            "k_value": k_value,
+            "lambda_value": lambda_value,
+            "epochs_configured": epochs,
+            "status": "Failed",
+            "error_message": str(e),
+            "error_traceback": error_trace,
+            "duration_seconds": (datetime.now() - experiment_start_time).total_seconds(),
+            "experiment_type": experiment_type,
         }
-        
-        print(f"✅ Experiment completed successfully!")
-        print(f"💾 Saving detailed results to Google Drive...")
-        
-        # Save individual result to Google Drive
-        save_experiment_result_to_drive(experiment_result, DATASET, experiment_num)
-        
-        return experiment_result
+    finally:
+        if sess is not None:
+            sess.close()
+        # Force garbage collection to free up memory, especially GPU memory
+        gc.collect()
 
 def train_epoch_optimized(model, batch_list, sess):
     """GPU-optimized training epoch with pipeline parallelization"""
@@ -1066,6 +1091,10 @@ def run_parallel_grid_search(k_values, lambda_values, epochs, dataset_name):
         for lambda_value in lambda_values:
             experiment_num += 1
             
+            # Ensure a clean slate for TensorFlow before each experiment run
+            tf.compat.v1.reset_default_graph()
+            gc.collect() # Force garbage collection
+
             print(f"\n{'='*20} EXPERIMENT {experiment_num}/{total_experiments} {'='*20}")
             print(f"🎯 Configuration: K={k_value}, λ={lambda_value}")
             print(f"⏱️  Estimated completion: {datetime.now() + pd.Timedelta(minutes=(total_experiments-experiment_num+1)*epochs*0.5)}")
@@ -1082,14 +1111,22 @@ def run_parallel_grid_search(k_values, lambda_values, epochs, dataset_name):
                 
                 all_results.append(result)
                 
-                # Memory cleanup between experiments
-                import gc
+                # Memory cleanup between experiments (already done at start of loop, but extra gc.collect here is fine)
                 gc.collect()
                 
-                print(f"✅ Experiment {experiment_num}/{total_experiments} completed")
-                print(f"   Best NDCG: {result['best_ndcg']:.4f}")
-                print(f"   GPU Efficiency: {result.get('gpu_efficiency_batches_per_min', 0):.1f} batches/min")
-                
+                # Check if the experiment actually completed successfully before trying to access detailed results
+                if result and result.get("status") == "Completed":
+                    print(f"✅ Experiment {experiment_num}/{total_experiments} completed")
+                    # Safely access keys, providing defaults if they might be missing
+                    print(f"   Best NDCG: {result.get('best_ndcg', 0.0):.4f}")
+                    print(f"   GPU Efficiency: {result.get('gpu_efficiency_batches_per_min', 0):.1f} batches/min")
+                elif result:
+                    print(f"⚠️ Experiment {experiment_num}/{total_experiments} finished with status: {result.get('status', 'Unknown')}")
+                    if result.get('error_message'):
+                        print(f"   Error: {result.get('error_message')}")
+                else:
+                    print(f"❌ Experiment {experiment_num}/{total_experiments} failed to return a result object.")
+
             except Exception as e:
                 print(f"❌ Experiment {experiment_num} failed: {e}")
                 # Continue with next experiment
@@ -1378,9 +1415,9 @@ print(f"""
 ✅ **MAXIMUM GPU OPTIMIZATION**: XLA JIT + Async I/O + 95% memory allocation
 ✅ **PIPELINE PARALLELIZATION**: Background data loading (2-3x speedup)
 ✅ **CPU PARALLELIZATION**: Multi-threaded data processing
-✅ **GPU Efficiency Tracking**: Real-time batches/minute monitoring
-✅ **Google Drive Integration**: Automatic result saving to your Drive
-✅ **Comprehensive Logging**: Best/final performance + overfitting detection
+✅ **GPU EFFICIENCY TRACKING**: Real-time batches/minute monitoring
+✅ **GOOGLE DRIVE INTEGRATION**: Automatic result saving to your Drive
+✅ **COMPREHENSIVE LOGGING**: Best/final performance + overfitting detection
 
 ### 🚀 GPU Optimization Strategy:
 - **Sequential Experiments**: Avoids TensorFlow GPU memory conflicts

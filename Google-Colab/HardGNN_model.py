@@ -21,6 +21,9 @@ import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 from DataHandler import negSamp, negSamp_fre, transpose, DataHandler, transToLsts
 
+# Ensure tensorflow is imported as tf for the AMP call
+import tensorflow as tf 
+
 print("✅ Using TensorFlow 2.x compatible HardGNN model (PRODUCTION)")
 print(f"TensorFlow version: {tf.__version__}")
 
@@ -284,7 +287,7 @@ class Recommender:
 		if args.use_hard_neg:
 			self.contrastive_loss = self.compute_infonce_loss(sampNum)
 		else:
-			self.contrastive_loss = 0.0
+			self.contrastive_loss = tf.constant(0.0, dtype=tf.float32) # Ensure it's a TF tensor
 			
 		self.regLoss = args.reg * Regularize() + args.ssl_reg * self.sslloss
 		
@@ -296,7 +299,20 @@ class Recommender:
 
 		globalStep = tf.Variable(0, trainable=False)
 		learningRate = tf.compat.v1.train.exponential_decay(args.lr, globalStep, args.decay_step, args.decay, staircase=True)
-		self.optimizer = tf.compat.v1.train.AdamOptimizer(learningRate).minimize(self.loss, global_step=globalStep)
+		
+		# Create the optimizer instance first
+		optimizer_instance = tf.compat.v1.train.AdamOptimizer(learningRate)
+
+		# Conditionally apply AMP if enabled via args
+		# Add 'enable_amp' to Params.py or manage it in the Colab script that calls this model
+		if hasattr(args, 'enable_amp') and args.enable_amp:
+			try:
+				optimizer_instance = tf.compat.v1.train.experimental.enable_mixed_precision_graph_rewrite(optimizer_instance)
+				print("✅ AMP applied to optimizer in HardGNN_model.py")
+			except Exception as e:
+				print(f"⚠️ Could not apply AMP to optimizer in HardGNN_model.py: {e}. Proceeding without AMP.")
+		
+		self.optimizer = optimizer_instance.minimize(self.loss, global_step=globalStep)
 
 	def compute_infonce_loss(self, sampNum):
 		"""
