@@ -402,6 +402,12 @@ class Recommender:
 		"""
 		Sample hard negatives based on cosine similarity
 		"""
+		# Handle K=0 case - no hard negatives
+		if args.hard_neg_top_k == 0:
+			return negSamp(user_interactions, sampNum, args.item, 
+				[self.handler.sequence[user_id][-1] if len(self.handler.sequence[user_id]) > 0 else None, 
+				self.handler.tstInt[user_id]], self.handler.item_with_pop)
+		
 		user_seq = self.handler.sequence[user_id][:-1]
 		if len(user_seq) == 0:
 			return negSamp(user_interactions, sampNum, args.item, 
