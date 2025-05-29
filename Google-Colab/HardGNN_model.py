@@ -138,20 +138,24 @@ class Recommender:
 		user_vector_tensor=tf.transpose(user_vector, perm=[1, 0, 2])
 		item_vector_tensor=tf.transpose(item_vector, perm=[1, 0, 2])
 
-		# TF2-compatible RNN cells
-		def gru_cell(): 
-			return tf.compat.v1.nn.rnn_cell.BasicLSTMCell(args.latdim)
-		def dropout():
-			cell = gru_cell()
-			return tf.compat.v1.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=self.keepRate)
+		# Keras 3 / TF 2.16+ compatible RNN using Keras native layers
+		# Define LSTM cell instances. Create separate instances if they need to have different weights.
+		user_lstm_cell = tf.keras.layers.LSTMCell(args.latdim)
+		item_lstm_cell = tf.keras.layers.LSTMCell(args.latdim) # Separate instance for item RNN
 
-		with tf.name_scope("rnn"):
-			cells = [dropout() for _ in range(1)]
-			rnn_cell = tf.compat.v1.nn.rnn_cell.MultiRNNCell(cells, state_is_tuple=True)        
-			user_vector_rnn, _ = tf.compat.v1.nn.dynamic_rnn(cell=rnn_cell, inputs=user_vector_tensor, dtype=tf.float32)
-			item_vector_rnn, _ = tf.compat.v1.nn.dynamic_rnn(cell=rnn_cell, inputs=item_vector_tensor, dtype=tf.float32)
-			user_vector_tensor=user_vector_rnn
-			item_vector_tensor=item_vector_rnn
+		# Use tf.keras.layers.RNN to create the dynamic RNN layer(s)
+		# return_sequences=True to get all outputs over the time/sequence dimension
+		user_rnn_layer = tf.keras.layers.RNN(user_lstm_cell, return_sequences=True, name='user_rnn_layer')
+		item_rnn_layer = tf.keras.layers.RNN(item_lstm_cell, return_sequences=True, name='item_rnn_layer')
+
+		user_vector_rnn_outputs = user_rnn_layer(user_vector_tensor)
+		item_vector_rnn_outputs = item_rnn_layer(item_vector_tensor)
+
+		# Apply dropout to the outputs of the RNN layer, similar to what DropoutWrapper aimed to do
+		# self.keepRate is a placeholder (e.g., 0.5 for training, 1.0 for testing)
+		# The rate for tf.nn.dropout is the probability to drop, so 1.0 - keepRate
+		user_vector_tensor = tf.nn.dropout(user_vector_rnn_outputs, rate=(1.0 - self.keepRate))
+		item_vector_tensor = tf.nn.dropout(item_vector_rnn_outputs, rate=(1.0 - self.keepRate))
 
 		# Attention mechanisms
 		self.additive_attention0 = AdditiveAttention(args.query_vector_dim,args.latdim)
@@ -159,9 +163,12 @@ class Recommender:
 		self.multihead_self_attention0 = MultiHeadSelfAttention(args.latdim,args.num_attention_heads)
 		self.multihead_self_attention1 = MultiHeadSelfAttention(args.latdim,args.num_attention_heads)
 
-		# TF2-compatible layer normalization
-		multihead_user_vector = self.multihead_self_attention0.attention(tf.compat.v1.layers.layer_norm(user_vector_tensor))
-		multihead_item_vector = self.multihead_self_attention1.attention(tf.compat.v1.layers.layer_norm(item_vector_tensor))
+		# Keras native LayerNormalization
+		ln_user = tf.keras.layers.LayerNormalization(name='ln_user_rnn_output')
+		ln_item = tf.keras.layers.LayerNormalization(name='ln_item_rnn_output')
+
+		multihead_user_vector = self.multihead_self_attention0.attention(ln_user(user_vector_tensor))
+		multihead_item_vector = self.multihead_self_attention1.attention(ln_item(item_vector_tensor))
 		final_user_vector = tf.reduce_mean(multihead_user_vector,axis=1)
 		final_item_vector = tf.reduce_mean(multihead_item_vector,axis=1)
 
@@ -174,11 +181,22 @@ class Recommender:
 		for i in range(args.att_layer):
 			self.multihead_self_attention_sequence.append(MultiHeadSelfAttention(args.latdim,args.num_attention_heads))
 
-		sequence_batch=tf.compat.v1.layers.layer_norm(tf.matmul(tf.expand_dims(self.mask,axis=1),tf.nn.embedding_lookup(iEmbed_att,self.sequence)))
-		sequence_batch+=tf.compat.v1.layers.layer_norm(tf.matmul(tf.expand_dims(self.mask,axis=1),tf.nn.embedding_lookup(posEmbed,pos)))
-		att_layer=sequence_batch
+		# Keras native LayerNormalization for sequence_batch inputs
+		ln_seq_embed = tf.keras.layers.LayerNormalization(name='ln_seq_embed')
+		ln_pos_embed = tf.keras.layers.LayerNormalization(name='ln_pos_embed')
+		ln_att_layer = tf.keras.layers.LayerNormalization(name='ln_att_layer_input') # For the input to the attention loop
+
+		sequence_batch = ln_seq_embed(tf.matmul(tf.expand_dims(self.mask,axis=1),tf.nn.embedding_lookup(iEmbed_att,self.sequence)))
+		sequence_batch += ln_pos_embed(tf.matmul(tf.expand_dims(self.mask,axis=1),tf.nn.embedding_lookup(posEmbed,pos)))
+		att_layer=sequence_batch # Initial input to the loop
 		for i in range(args.att_layer):
-			att_layer1=self.multihead_self_attention_sequence[i].attention(tf.compat.v1.layers.layer_norm(att_layer))
+			# Instantiate LayerNormalization for each attention layer's input if weights should be distinct, or reuse
+			# For simplicity here, let's create new instances or ensure the scope handles variable naming
+			# However, often a single LN instance is reused if the transformation is meant to be the same.
+			# Given the original code tf.compat.v1.layers.layer_norm(att_layer) implies new computation (possibly shared weights via TF1 default reuse rules)
+			# we will instantiate it here to be safe for distinctness or rely on Keras layer naming for reuse within scope if intended.
+			ln_current_att_input = tf.keras.layers.LayerNormalization(name=f'ln_att_layer_input_loop_{i}')
+			att_layer1=self.multihead_self_attention_sequence[i].attention(ln_current_att_input(att_layer))
 			att_layer=Activate(att_layer1,"leakyRelu")+att_layer
 		att_user=tf.reduce_sum(att_layer,axis=1)
 

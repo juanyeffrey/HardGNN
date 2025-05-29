@@ -59,29 +59,35 @@ class MultiHeadSelfAttention:
         batch_size = tf.compat.v1.shape(inputs)[0]
         seq_len = tf.compat.v1.shape(inputs)[1]
         
-        # Linear transformations for Q, K, V using tf.compat.v1
+        # Linear transformations for Q, K, V using tf.keras.layers.Dense
         with tf.compat.v1.variable_scope("multihead_attention", reuse=tf.compat.v1.AUTO_REUSE):
-            # Replace tf.layers.dense with tf.compat.v1.layers.dense
-            Q = tf.compat.v1.layers.dense(
-                inputs, 
-                self.d_model,
+            # Replace tf.compat.v1.layers.dense with tf.keras.layers.Dense
+            # Note: kernel_initializer is a direct Keras argument.
+            # The name argument in Keras layers helps with variable scoping if needed, but Keras handles its own variable creation.
+            self.query_projection_layer = tf.keras.layers.Dense(
+                units=self.d_model,
                 kernel_initializer=tf.compat.v1.keras.initializers.glorot_uniform(),
                 name="query_projection"
             )
-            
-            K = tf.compat.v1.layers.dense(
-                inputs, 
-                self.d_model,
+            self.key_projection_layer = tf.keras.layers.Dense(
+                units=self.d_model,
                 kernel_initializer=tf.compat.v1.keras.initializers.glorot_uniform(),
                 name="key_projection"
             )
-            
-            V = tf.compat.v1.layers.dense(
-                inputs, 
-                self.d_model,
+            self.value_projection_layer = tf.keras.layers.Dense(
+                units=self.d_model,
                 kernel_initializer=tf.compat.v1.keras.initializers.glorot_uniform(),
                 name="value_projection"
             )
+            self.output_projection_layer = tf.keras.layers.Dense(
+                units=self.d_model,
+                kernel_initializer=tf.compat.v1.keras.initializers.glorot_uniform(),
+                name="output_projection"
+            )
+
+            Q = self.query_projection_layer(inputs)
+            K = self.key_projection_layer(inputs)
+            V = self.value_projection_layer(inputs)
         
         # Split heads
         Q = self.split_heads(Q, batch_size)  # (batch_size, num_heads, seq_len, depth)
@@ -97,13 +103,8 @@ class MultiHeadSelfAttention:
                                                (batch_size, seq_len, self.d_model))
         
         # Final linear projection
-        with tf.compat.v1.variable_scope("multihead_attention", reuse=tf.compat.v1.AUTO_REUSE):
-            output = tf.compat.v1.layers.dense(
-                concat_attention,
-                self.d_model,
-                kernel_initializer=tf.compat.v1.keras.initializers.glorot_uniform(),
-                name="output_projection"
-            )
+        # with tf.compat.v1.variable_scope("multihead_attention", reuse=tf.compat.v1.AUTO_REUSE): # Scope already handled by layer
+        output = self.output_projection_layer(concat_attention)
         
         return output
     

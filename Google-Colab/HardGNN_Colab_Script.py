@@ -226,6 +226,15 @@ print("=" * 60)
 # CELL 2: Dataset Configuration and Module Import
 # ========================================================================
 
+# Make the globally configured TensorFlow available as tf
+if tensorflow_to_use: # Check if tensorflow_to_use was successfully imported in Cell 1
+    tf = tensorflow_to_use
+else:
+    # Fallback or error if tensorflow_to_use didn't load, though Cell 1 should raise an error earlier.
+    # This import might fail if Cell 1 failed catastrophically before setting tensorflow_to_use.
+    import tensorflow as tf 
+    print("⚠️ Warning: tensorflow_to_use was not set from Cell 1. Attempted direct import of tensorflow as tf.")
+
 # Core imports
 import os
 import numpy as np
@@ -504,9 +513,16 @@ print(f"  Regularization: {args.reg}")
 # Start fresh session for training
 tf.compat.v1.reset_default_graph()
 
+# Also reset NNLayers_tf2 global parameter tracking
+from Utils import NNLayers_tf2 # Import the module
+print(f"[DEBUG CELL 5] NNLayers_tf2.params before reset: {list(NNLayers_tf2.params.keys()) if NNLayers_tf2.params else 'Empty or None'}")
+NNLayers_tf2.reset_nn_params() # Call the reset function via the module
+print(f"[DEBUG CELL 5] NNLayers_tf2.params after reset: {list(NNLayers_tf2.params.keys()) if NNLayers_tf2.params else 'Empty or None'}")
+
 with tf.compat.v1.Session(config=config) as sess:
     # Initialize model
     model = Recommender(sess, handler)
+    print(f"[DEBUG CELL 5] NNLayers_tf2.params just before model.prepareModel(): {list(NNLayers_tf2.params.keys()) if NNLayers_tf2.params else 'Empty or None'}")
     model.prepareModel()
     log('✅ Model prepared for training')
     

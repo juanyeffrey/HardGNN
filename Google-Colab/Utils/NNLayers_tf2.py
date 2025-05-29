@@ -9,7 +9,17 @@ biasDefault = False
 params = {}
 regParams = {}
 ita = 0.2
-leaky = 0.1
+leaky = 0.2
+# Tmp here is for selecting params to save.(Only for FISM)
+tmp = {}
+
+def reset_nn_params():
+	"""Resets the global parameter dictionaries for NNLayers_tf2."""
+	global params, regParams, tmp
+	params = {}
+	regParams = {}
+	tmp = {}
+	# print("NNLayers_tf2 global parameters have been reset.") # Optional: for debugging
 
 def getParamId():
 	global paramId

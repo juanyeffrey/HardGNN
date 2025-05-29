@@ -55,6 +55,8 @@ def parse_args():
 	# Additional parameters for model compatibility
 	parser.add_argument('--seq_length', default=200, type=int, help='sequence length for sequential model')
 	parser.add_argument('--time_split', default=3600, type=int, help='time split for temporal modeling')
-	return parser.parse_args()
+	# return parser.parse_args()
+	parsed_args, unknown = parser.parse_known_args()
+	return parsed_args
 args = parse_args()
 args.decay_step = args.trnNum//args.batch
