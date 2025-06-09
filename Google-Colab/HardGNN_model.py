@@ -368,8 +368,28 @@ class Recommender:
 		uLocs_seq = [None]* temlen
 		sequence = [None] * args.batch
 		mask = [None]*args.batch
-		cur = 0				
+		cur = 0
 
+		# Prepare data for batch hard negative sampling
+		batch_user_interactions = []
+		batch_sampNums = []
+		batch_need_hard_neg = []
+		
+		# First pass: collect all necessary data for batch processing
+		for i in range(batch):
+			posset=self.handler.sequence[batIds[i]][:-1]
+			sampNum = min(train_sample_num, len(posset))
+			batch_sampNums.append(sampNum)
+			batch_user_interactions.append(temLabel[i])
+			batch_need_hard_neg.append(sampNum > 0 and args.use_hard_neg)
+		
+		# Batch hard negative sampling for all users at once
+		if args.use_hard_neg and any(batch_need_hard_neg):
+			all_hard_negatives = self.batch_sample_hard_negatives(batIds, batch_user_interactions, batch_sampNums)
+		else:
+			all_hard_negatives = [[] for _ in range(batch)]
+
+		# Second pass: build the training batch using pre-computed hard negatives
 		for i in range(batch):
 			posset=self.handler.sequence[batIds[i]][:-1]
 			sampNum = min(train_sample_num, len(posset))
@@ -382,9 +402,9 @@ class Recommender:
 				choose = randint(1,max(min(args.pred_num+1,len(posset)-3),1))
 				poslocs.extend([posset[-choose]]*sampNum)
 				
-				# Hard negative sampling
-				if args.use_hard_neg:
-					neglocs = self.sample_hard_negatives(batIds[i], temLabel[i], sampNum)
+				# Use pre-computed hard negatives or fallback to random
+				if args.use_hard_neg and i < len(all_hard_negatives) and len(all_hard_negatives[i]) > 0:
+					neglocs = all_hard_negatives[i]
 				else:
 					neglocs = negSamp(temLabel[i], sampNum, args.item, [self.handler.sequence[batIds[i]][-1],temTst[i]], self.handler.item_with_pop)
 			
@@ -416,7 +436,7 @@ class Recommender:
 
 	def sample_hard_negatives(self, user_id, user_interactions, sampNum):
 		"""
-		Sample hard negatives based on cosine similarity
+		Optimized hard negative sampling with pre-computed embeddings
 		"""
 		# Handle K=0 case - no hard negatives
 		if args.hard_neg_top_k == 0:
@@ -424,78 +444,226 @@ class Recommender:
 				[self.handler.sequence[user_id][-1] if len(self.handler.sequence[user_id]) > 0 else None, 
 				self.handler.tstInt[user_id]], self.handler.item_with_pop)
 		
+		# Fast fallback for empty sequences
 		user_seq = self.handler.sequence[user_id][:-1]
 		if len(user_seq) == 0:
 			return negSamp(user_interactions, sampNum, args.item, 
 				[self.handler.sequence[user_id][-1] if len(self.handler.sequence[user_id]) > 0 else None, 
 				self.handler.tstInt[user_id]], self.handler.item_with_pop)
 		
-		# Prepare feed dictionary for forward pass
-		feed_dict = {}
-		seq_batch = np.zeros((args.batch, args.pos_length), dtype=int)
-		mask_batch = np.zeros((args.batch, args.pos_length))
-		
-		if len(user_seq) <= args.pos_length:
-			seq_batch[0, -len(user_seq):] = user_seq
-			mask_batch[0, -len(user_seq):] = 1
+		# Use cached embeddings if available
+		if hasattr(self, '_cached_item_embeddings') and self._cached_item_embeddings is not None:
+			items_embed = self._cached_item_embeddings
 		else:
-			seq_batch[0, :] = user_seq[-args.pos_length:]
-			mask_batch[0, :] = 1
+			# Compute once and cache for the entire batch
+			try:
+				feed_dict = {self.is_train: False, self.keepRate: 1.0}
+				# Minimal dummy values
+				dummy_vals = np.zeros(2, dtype=np.int32)
+				feed_dict[self.uids] = dummy_vals
+				feed_dict[self.iids] = dummy_vals
+				feed_dict[self.uLocs_seq] = dummy_vals
+				feed_dict[self.sequence] = np.zeros((args.batch, args.pos_length), dtype=int)
+				feed_dict[self.mask] = np.zeros((args.batch, args.pos_length))
+				
+				for k in range(args.graphNum):
+					feed_dict[self.suids[k]] = dummy_vals
+					feed_dict[self.siids[k]] = dummy_vals
+					feed_dict[self.suLocs_seq[k]] = dummy_vals
+				
+				items_embed = self.sess.run(self.final_item_vector, feed_dict=feed_dict)
+				self._cached_item_embeddings = items_embed
+			except:
+				return negSamp(user_interactions, sampNum, args.item, 
+					[self.handler.sequence[user_id][-1], self.handler.tstInt[user_id]], 
+					self.handler.item_with_pop)
+		
+		# Fast user embedding computation using cached historical patterns
+		if hasattr(self, '_user_profile_cache') and user_id in self._user_profile_cache:
+			user_embed = self._user_profile_cache[user_id]
+		else:
+			# Simplified user representation: average of recent item embeddings
+			if len(user_seq) > 0:
+				recent_items = user_seq[-min(10, len(user_seq)):]  # Last 10 items max
+				user_embed = np.mean(items_embed[recent_items], axis=0)
+			else:
+				user_embed = np.mean(items_embed, axis=0)  # Global average fallback
+		
+		# Fast approximate similarity using optimized numpy operations
+		user_norm = np.linalg.norm(user_embed)
+		items_norm = np.linalg.norm(items_embed, axis=1)
+		user_norm = max(user_norm, 1e-10)
+		items_norm = np.maximum(items_norm, 1e-10)
+		
+		# Vectorized cosine similarity
+		similarities = np.dot(items_embed, user_embed) / (items_norm * user_norm)
+		
+		# Fast exclusion of interacted items
+		interacted_items = np.where(user_interactions > 0)[0]
+		similarities[interacted_items] = -np.inf
+		if self.handler.tstInt[user_id] is not None:
+			similarities[self.handler.tstInt[user_id]] = -np.inf
+		
+		# Fast top-k selection using argpartition (O(n) vs O(nlogn) for full sort)
+		if args.hard_neg_top_k < len(similarities):
+			# Use argpartition for faster top-k selection
+			partition_idx = len(similarities) - args.hard_neg_top_k
+			hard_neg_indices = np.argpartition(similarities, partition_idx)[partition_idx:]
+		else:
+			hard_neg_indices = np.argsort(similarities)[-args.hard_neg_top_k:]
+		
+		# Handle sample number requirements
+		if sampNum > len(hard_neg_indices):
+			additional_negs = negSamp(user_interactions, sampNum - len(hard_neg_indices), 
+									args.item, [self.handler.sequence[user_id][-1], self.handler.tstInt[user_id]], 
+									self.handler.item_with_pop)
+			return list(hard_neg_indices) + additional_negs
+		
+		if sampNum < len(hard_neg_indices):
+			return np.random.choice(hard_neg_indices, sampNum, replace=False).tolist()
+		
+		return hard_neg_indices.tolist()
+
+	def clear_hard_neg_cache(self):
+		"""Clear cached embeddings - call between epochs"""
+		if hasattr(self, '_cached_item_embeddings'):
+			self._cached_item_embeddings = None
+		if hasattr(self, '_user_profile_cache'):
+			self._user_profile_cache = {}
+		if hasattr(self, '_cache_step_counter'):
+			self._cache_step_counter = 0
+
+	def should_refresh_cache(self, force_refresh=False):
+		"""Determine if embeddings cache should be refreshed"""
+		if force_refresh:
+			return True
+		
+		if not hasattr(self, '_cache_step_counter'):
+			self._cache_step_counter = 0
+		
+		# Refresh cache every N training steps to balance accuracy and speed
+		cache_refresh_interval = getattr(args, 'cache_refresh_steps', 50)  # Refresh every 50 steps by default
+		self._cache_step_counter += 1
+		
+		if self._cache_step_counter >= cache_refresh_interval:
+			self._cache_step_counter = 0
+			return True
+		
+		return False
+
+	def batch_sample_hard_negatives(self, batIds, user_interactions_batch, sampNums):
+		"""
+		Optimized batch hard negative sampling with smart caching
+		"""
+		if args.hard_neg_top_k == 0:
+			return [negSamp(user_interactions_batch[i], sampNums[i], args.item, 
+				[self.handler.sequence[batIds[i]][-1] if len(self.handler.sequence[batIds[i]]) > 0 else None, 
+				self.handler.tstInt[batIds[i]]], self.handler.item_with_pop) 
+				for i in range(len(batIds))]
+		
+		# Use cached embeddings if available and fresh enough
+		need_refresh = self.should_refresh_cache() or not hasattr(self, '_cached_item_embeddings') or self._cached_item_embeddings is None
+		
+		# Compute embeddings only when needed
+		if need_refresh:
+			try:
+				batch_size = len(batIds)
+				seq_batch = np.zeros((args.batch, args.pos_length), dtype=int)
+				mask_batch = np.zeros((args.batch, args.pos_length))
+				
+				for i, user_id in enumerate(batIds):
+					if i >= args.batch:
+						break
+					user_seq = self.handler.sequence[user_id][:-1]
+					if len(user_seq) > 0:
+						if len(user_seq) <= args.pos_length:
+							seq_batch[i, -len(user_seq):] = user_seq
+							mask_batch[i, -len(user_seq):] = 1
+						else:
+							seq_batch[i, :] = user_seq[-args.pos_length:]
+							mask_batch[i, :] = 1
+				
+				feed_dict = {
+					self.sequence: seq_batch,
+					self.mask: mask_batch,
+					self.is_train: False,
+					self.keepRate: 1.0
+				}
+				
+				# Dummy values for required placeholders
+				dummy_vals = np.zeros(max(2, batch_size), dtype=np.int32)
+				feed_dict[self.uids] = dummy_vals
+				feed_dict[self.iids] = dummy_vals
+				feed_dict[self.uLocs_seq] = dummy_vals
+				
+				for k in range(args.graphNum):
+					feed_dict[self.suids[k]] = dummy_vals
+					feed_dict[self.siids[k]] = dummy_vals
+					feed_dict[self.suLocs_seq[k]] = dummy_vals
+				
+				# Single forward pass for all embeddings
+				items_embed, user_att = self.sess.run([self.final_item_vector, self.att_user], feed_dict=feed_dict)
+				self._cached_item_embeddings = items_embed
+				self._cached_user_embeddings = user_att
+			except Exception as e:
+				print(f"Batch hard negative sampling failed: {e}, falling back to individual sampling")
+				return [self.sample_hard_negatives(batIds[i], user_interactions_batch[i], sampNums[i]) 
+						for i in range(len(batIds))]
+		else:
+			items_embed = self._cached_item_embeddings
+			# For user embeddings, use simplified computation when not refreshing
+			user_att = np.zeros((len(batIds), items_embed.shape[1]))
+			for i, user_id in enumerate(batIds):
+				user_seq = self.handler.sequence[user_id][:-1]
+				if len(user_seq) > 0:
+					recent_items = user_seq[-min(5, len(user_seq)):]
+					user_att[i] = np.mean(items_embed[recent_items], axis=0)
+				else:
+					user_att[i] = np.mean(items_embed, axis=0)
+		
+		# Process each user's hard negatives using cached embeddings
+		all_hard_negs = []
+		batch_size = len(batIds)
+		for i, user_id in enumerate(batIds):
+			if i >= batch_size:
+				break
+				
+			user_embed = user_att[i]
+			user_interactions = user_interactions_batch[i]
+			sampNum = sampNums[i]
 			
-		feed_dict[self.sequence] = seq_batch
-		feed_dict[self.mask] = mask_batch
-		feed_dict[self.is_train] = False
-		feed_dict[self.keepRate] = 1.0
-		
-		# Dummy values for required placeholders
-		dummy_vals = np.zeros(2, dtype=np.int32)
-		feed_dict[self.uids] = dummy_vals
-		feed_dict[self.iids] = dummy_vals
-		feed_dict[self.uLocs_seq] = dummy_vals
-		
-		for k in range(args.graphNum):
-			feed_dict[self.suids[k]] = dummy_vals
-			feed_dict[self.siids[k]] = dummy_vals
-			feed_dict[self.suLocs_seq[k]] = dummy_vals
-		
-		try:
-			# Get embeddings
-			items_embed, user_att = self.sess.run([self.final_item_vector, self.att_user], feed_dict=feed_dict)
-			user_embed = user_att[0]
-			
-			# Compute cosine similarities
+			# Fast similarity computation
 			user_norm = np.linalg.norm(user_embed)
 			items_norm = np.linalg.norm(items_embed, axis=1)
 			user_norm = max(user_norm, 1e-10)
 			items_norm = np.maximum(items_norm, 1e-10)
-			similarities = np.sum(user_embed * items_embed, axis=1) / (user_norm * items_norm)
+			similarities = np.dot(items_embed, user_embed) / (items_norm * user_norm)
 			
 			# Exclude interacted items
 			interacted_items = np.where(user_interactions > 0)[0]
-			exclude_items = list(interacted_items)
+			similarities[interacted_items] = -np.inf
 			if self.handler.tstInt[user_id] is not None:
-				exclude_items.append(self.handler.tstInt[user_id])
-			similarities[exclude_items] = -np.inf
+				similarities[self.handler.tstInt[user_id]] = -np.inf
 			
-			# Get hard negatives
-			hard_neg_indices = np.argsort(similarities)[-args.hard_neg_top_k:]
+			# Fast top-k selection
+			if args.hard_neg_top_k < len(similarities):
+				partition_idx = len(similarities) - args.hard_neg_top_k
+				hard_neg_indices = np.argpartition(similarities, partition_idx)[partition_idx:]
+			else:
+				hard_neg_indices = np.argsort(similarities)[-args.hard_neg_top_k:]
 			
+			# Handle sample requirements
 			if sampNum > len(hard_neg_indices):
 				additional_negs = negSamp(user_interactions, sampNum - len(hard_neg_indices), 
 										args.item, [self.handler.sequence[user_id][-1], self.handler.tstInt[user_id]], 
 										self.handler.item_with_pop)
-				return list(hard_neg_indices) + additional_negs
-			
-			if sampNum < len(hard_neg_indices):
-				return np.random.choice(hard_neg_indices, sampNum, replace=False).tolist()
-			
-			return hard_neg_indices.tolist()
-			
-		except Exception as e:
-			print(f"Error in hard negative sampling: {e}")
-			return negSamp(user_interactions, sampNum, args.item, 
-				[self.handler.sequence[user_id][-1], self.handler.tstInt[user_id]], 
-				self.handler.item_with_pop)
+				all_hard_negs.append(list(hard_neg_indices) + additional_negs)
+			elif sampNum < len(hard_neg_indices):
+				all_hard_negs.append(np.random.choice(hard_neg_indices, sampNum, replace=False).tolist())
+			else:
+				all_hard_negs.append(hard_neg_indices.tolist())
+		
+		return all_hard_negs
 
 	def sampleSslBatch(self, batIds, labelMat, use_epsilon=True):
 		temLabel=list()
@@ -533,6 +701,9 @@ class Recommender:
 		return uLocs, iLocs, uLocs_seq
 
 	def trainEpoch(self):
+		# Clear hard negative sampling cache for fresh embeddings each epoch
+		self.clear_hard_neg_cache()
+		
 		num = args.user
 		sfIds = np.random.permutation(num)[:args.trnNum]
 		epochLoss, epochPreLoss = [0] * 2

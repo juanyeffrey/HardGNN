@@ -40,7 +40,7 @@ def parse_args():
 	parser.add_argument('--temp', default=1, type=float, help='temperature in ssl loss')
 	parser.add_argument('--ssl_reg', default=1e-4, type=float, help='reg weight for ssl loss')
 	parser.add_argument('--percent', default=0.0, type=float, help='percent of noise for noise robust test')
-	parser.add_argument('--pos_length', default=200, type=int, help='max length of a sequence')
+	parser.add_argument('--pos_length', default=50, type=int, help='max length of a sequence')
 	parser.add_argument('--att_size', default=12000, type=int, help='max size of multi att')
 	parser.add_argument('--att_layer', default=4, type=int, help='layer number of multi att')
 	parser.add_argument('--pred_num', default=5, type=int, help='pred number of train')
