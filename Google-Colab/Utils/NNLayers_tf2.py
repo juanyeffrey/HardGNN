@@ -41,7 +41,7 @@ def addReg(name, param):
 	if name not in regParams:
 		regParams[name] = param
 	else:
-		print('ERROR: Parameter already exists')
+		raise ValueError(f'Parameter {name} already exists')
 
 def addParam(name, param):
 	global params
@@ -73,8 +73,7 @@ def defineParam(name, shape, dtype=tf.float32, reg=False, initializer='xavier', 
 		ret = tf.compat.v1.get_variable(name=name, dtype=dtype,
 			initializer=initializer, trainable=trainable)
 	else:
-		print('ERROR: Unrecognized initializer')
-		exit()
+		raise ValueError(f'Unrecognized initializer: {initializer}')
 	params[name] = ret
 	if reg:
 		regParams[name] = ret

@@ -24,15 +24,10 @@ from DataHandler import negSamp, negSamp_fre, transpose, DataHandler, transToLst
 # Ensure tensorflow is imported as tf for the AMP call
 import tensorflow as tf 
 
-print("✅ Using TensorFlow 2.x compatible HardGNN model (PRODUCTION)")
-print(f"TensorFlow version: {tf.__version__}")
-
 class Recommender:
 	def __init__(self, sess, handler):
 		self.sess = sess
 		self.handler = handler
-
-		print('USER', args.user, 'ITEM', args.item)
 		self.metrics = dict()
 		mets = ['Loss', 'preLoss', 'HR', 'NDCG']
 		if args.use_hard_neg:
@@ -76,7 +71,6 @@ class Recommender:
 				maxndcg=reses['NDCG']
 				maxres=reses
 				maxepoch=ep
-			print()
 		reses = self.testEpoch()
 		log(self.makePrint('Test', args.epoch, reses, True))
 		log(self.makePrint('max', maxepoch, maxres, True))
@@ -308,9 +302,8 @@ class Recommender:
 		if hasattr(args, 'enable_amp') and args.enable_amp:
 			try:
 				optimizer_instance = tf.compat.v1.train.experimental.enable_mixed_precision_graph_rewrite(optimizer_instance)
-				print("✅ AMP applied to optimizer in HardGNN_model.py")
 			except Exception as e:
-				print(f"⚠️ Could not apply AMP to optimizer in HardGNN_model.py: {e}. Proceeding without AMP.")
+				pass  # Continue without AMP if unavailable
 		
 		self.optimizer = optimizer_instance.minimize(self.loss, global_step=globalStep)
 
@@ -606,7 +599,7 @@ class Recommender:
 				self._cached_item_embeddings = items_embed
 				self._cached_user_embeddings = user_att
 			except Exception as e:
-				print(f"Batch hard negative sampling failed: {e}, falling back to individual sampling")
+				# Fallback to individual sampling
 				return [self.sample_hard_negatives(batIds[i], user_interactions_batch[i], sampNums[i]) 
 						for i in range(len(batIds))]
 		else:
@@ -842,8 +835,6 @@ class Recommender:
 			# TF2-compatible session run
 			preds = self.sess.run(self.preds, feed_dict=feed_dict)
 
-			if(args.uid!=-1):
-				print(preds[args.uid])
 			if(args.test==True):
 				hit, ndcg, hit5, ndcg5, hit20, ndcg20,hit1, ndcg1,  hit15, ndcg15= self.calcRes(np.reshape(preds, [ed-st, args.testSize]), temTst, tstLocs)
 			else:
@@ -863,8 +854,6 @@ class Recommender:
 		ret = dict()
 		ret['HR'] = epochHit / num
 		ret['NDCG'] = epochNdcg / num
-		print("epochNdcg1:{},epochHit1:{},epochNdcg5:{},epochHit5:{}".format(epochNdcg1/ num,epochHit1/ num,epochNdcg5/ num,epochHit5/ num))
-		print("epochNdcg15:{},epochHit15:{},epochNdcg20:{},epochHit20:{}".format(epochNdcg15/ num,epochHit15/ num,epochNdcg20/ num,epochHit20/ num))
 		return ret
 
 	def calcRes(self, preds, temTst, tstLocs):

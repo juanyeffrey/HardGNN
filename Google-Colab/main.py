@@ -20,24 +20,15 @@ try:
 	if gpus:
 		for gpu in gpus:
 			tf.config.experimental.set_memory_growth(gpu, True)
-		print(f"✅ GPU configured: {len(gpus)} GPU(s) available")
-	else:
-		print("⚠️ No GPU found, using CPU")
 except Exception as e:
-	print(f"GPU configuration warning: {e}")
+	pass  # GPU configuration warnings
 
 from Params import args
 from HardGNN_model import Recommender
 from DataHandler import DataHandler
 import Utils.TimeLogger as logger
 
-print("🚀 Starting HardGNN experiment")
-print(f"Dataset: {args.data}")
-print(f"Hard Negative Sampling: {'Enabled' if args.use_hard_neg else 'Disabled'}")
-if args.use_hard_neg:
-	print(f"Temperature τ: {args.temp}")
-	print(f"Hard negatives K: {args.hard_neg_top_k}")
-	print(f"Contrastive weight λ: {args.contrastive_weight}")
+# Main configuration loaded
 
 def main():
 	logger.saveDefault = True
@@ -61,8 +52,6 @@ def main():
 		
 		# Run the experiment
 		recom.run()
-		
-	print("✅ Experiment completed successfully!")
 
 if __name__ == '__main__':
 	main() 
