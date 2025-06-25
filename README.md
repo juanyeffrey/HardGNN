@@ -41,7 +41,7 @@ This work builds upon the SelfGNN framework. If you use this code, please cite b
 - **LSTM Sequence Modeling**: Temporal user behavior modeling
 - **Multi-Head Attention**: Advanced attention mechanisms for user-item interactions
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Environment Setup
 ```bash
@@ -64,8 +64,6 @@ The datasets are organized in the `./Datasets` folder:
 
 ### Training Examples
 
-#### Quick Examples with Unified Script
-
 #### Unified Script (New & Recommended)
 The new `run_hardgnn.py` provides a clean interface with validation and grid search:
 
@@ -80,20 +78,7 @@ python run_hardgnn.py --dataset yelp --grid-search --k-values 3,5,7 --lambda-val
 python main.py --dataset amazon --k 5 --lambda 0.1 --epochs 100 --validate
 ```
 
-#### Legacy Configuration
-```bash
-python main.py \
-    --data amazon \
-    --use_hard_neg True \
-    --hard_neg_top_k 5 \
-    --contrastive_weight 0.1 \
-    --temp 0.1 \
-    --latdim 64 \
-    --batch 512 \
-    --epoch 100
-```
-
-## 🔧 Configuration Parameters
+## Configuration Parameters
 
 ### Hard Negative Sampling Parameters
 - `--use_hard_neg`: Enable/disable hard negative sampling (default: False)
@@ -109,65 +94,38 @@ python main.py \
 - `--graphNum`: Number of time-based graphs (default: 8)
 - `--ssl_reg`: Self-supervised learning regularization (default: 1e-4)
 
-## 📊 Testing & Validation
-
-### Contrastive Loss Validation
-```bash
-# Test the contrastive loss component
-python test_contrastive_loss.py
-```
-
-This script validates:
-- ✅ Hard negative sampling effectiveness
-- ✅ InfoNCE loss discrimination power  
-- ✅ Similarity gap between positives and negatives
-- ✅ Overall contrastive learning quality
-
-### Expected Output
-```
-🔍 Starting Contrastive Loss Validation...
-📊 Configuration: τ=0.1, K=5, λ=0.1
-✅ Positive similarities > Negative similarities
-✅ Hard negative sampling working (high similarity negatives)
-✅ Good discriminative power
-```
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 HardGNN_Standalone/
 ├── README.md                     # This file
 ├── LICENSE                       # Apache-2.0 license
 ├── requirements.txt              # Python dependencies
-├── run_hardgnn.py               # 🆕 Unified experiment runner with grid search
 ├── main.py                       # Enhanced main training script  
-├── model.py                      # Enhanced SelfGNN with HardGNN
+├── HardGNN_model.py              # Enhanced SelfGNN with HardGNN
 ├── Params.py                     # Enhanced parameter configuration
 ├── DataHandler.py                # Data loading and processing
-├── test_contrastive_loss.py      # Contrastive loss validation
-├── setup_environment.py          # Environment setup for Colab
-├── run_hardgnn_example.bat      # 🆕 Windows usage examples
+├── amazon.sh                     # Shell script for Amazon dataset
+├── movielens.sh                  # Shell script for MovieLens dataset
+├── gowalla.sh                    # Shell script for Gowalla dataset
+├── Final_Report.pdf              # Final report on HardGNN performance
 ├── Utils/                        # Utility functions (enhanced)
-│   ├── hardgnn_utils.py         # 🆕 Unified utility module (all functions)
-│   ├── NNLayers.py              # Neural network layers
-│   ├── TimeLogger.py            # Logging utilities
-│   └── attention.py             # Attention mechanisms
+│   ├── NNLayers.py               # Neural network layers
+│   ├── TimeLogger.py             # Logging utilities
+│   └── attention.py              # Attention mechanisms
 ├── Datasets/                     # Dataset storage
 ├── Models/                       # Saved model checkpoints
 ├── History/                      # Training history and metrics
 ├── preprocess_to_sequence.ipynb  # Data preprocessing notebook
-└── preprocess_to_trnmat.ipynb   # Matrix preprocessing notebook
+└── preprocess_to_trnmat.ipynb    # Matrix preprocessing notebook
 ```
 
-## 🔧 Unified Utilities Module
-
-The `Utils/hardgnn_utils.py` module consolidates all utility functions for streamlined usage:
+## Utilities Module
 
 ### Core Components
 - **Dataset Configuration**: Validated parameter sets for all datasets (Yelp, Amazon, Gowalla, MovieLens)
 - **TensorFlow Setup**: GPU optimization, session management, and v1 compatibility handling
 - **Training Pipeline**: GPU-optimized epochs with background data loading and pipeline parallelization
-- **Grid Search**: Comprehensive hyperparameter exploration with memory management
 - **Validation Suite**: Model setup, hyperparameter, and contrastive loss validation
 - **Result Management**: JSON/CSV output, performance tracking, and experiment summaries
 
@@ -176,14 +134,12 @@ The `Utils/hardgnn_utils.py` module consolidates all utility functions for strea
 from Utils.hardgnn_utils import (
     configure_dataset,           # Configure dataset-specific parameters
     setup_tensorflow_session,    # Optimized TF session configuration
-    run_single_experiment,       # Execute single experiment with validation
-    run_grid_search,            # Comprehensive hyperparameter search
     validate_model_setup,       # Model component validation
     validate_contrastive_loss   # Hard negative sampling validation
 )
 ```
 
-## 🔬 Implementation Details
+## Implementation Details
 
 ### Hard Negative Sampling Algorithm
 1. **User-Item Similarity Computation**: Calculate cosine similarities between user embeddings and all item embeddings
@@ -198,28 +154,11 @@ from Utils.hardgnn_utils import (
 - **Hard Negative Sampling**: Integrated into training pipeline
 - **InfoNCE Loss**: Added to overall loss function
 
-## 📈 Expected Performance
+## Performance
 
-The HardGNN enhancement is designed to improve upon baseline SelfGNN performance:
-- **Better Discrimination**: Hard negatives provide more challenging training samples
-- **Improved Representations**: InfoNCE loss enhances embedding quality
-- **Faster Convergence**: More efficient learning from difficult examples
+[Final Report](Final_Report.pdf) provides detailed performance metrics and comparisons against baseline SelfGNN.
 
-## 🐛 Troubleshooting
-
-### Common Issues
-1. **TensorFlow Compatibility**: Ensure TF 1.x compatibility mode is enabled
-2. **Memory Issues**: Reduce batch size or embedding dimensions if OOM occurs
-3. **Dataset Format**: Ensure datasets follow the expected format (see preprocessing notebooks)
-4. **GPU Configuration**: Check GPU memory growth settings
-
-### Debug Mode
-```bash
-# Enable detailed logging
-python main.py --data amazon --use_hard_neg True --debug True
-```
-
-## 📊 Evaluation Metrics
+## Evaluation Metrics
 
 The model tracks the following metrics:
 - **HR@10**: Hit Rate at 10
